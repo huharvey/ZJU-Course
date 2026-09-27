@@ -1557,7 +1557,7 @@ def api_open_download_dir():
 
 
 # ---------------------------------------------------------------- 智云课堂 ----
-# 课堂直录播列表 + 「导出课件(PPT)」。
+# 课堂直录播列表 + 「导出课件(PPT)」+ 「导出字幕(TXT)」。
 # 链路：学在浙大课程 → 课堂直录播标签(extension-lives) → 智云课堂回放页
 #       → 官方「导出课件」接口（与网页端按钮完全同源，产物是原生 PPT/PDF）。
 #
@@ -1636,6 +1636,185 @@ def api_course_lives(course_id):
         return {'ok': True, 'lives': lives}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
+
+
+def _subtitle_time_seconds(value, absolute=False):
+    """把智云字幕中的秒数或绝对时间转成 float；无法解析时返回 None。"""
+    if value in (None, ''):
+        return None
+    try:
+        number = float(value)
+        # 绝对时间偶尔会使用毫秒时间戳。
+        if absolute and number > 100000000000:
+            number /= 1000
+        return number
+    except (TypeError, ValueError):
+        pass
+    if not absolute:
+        return None
+    text = str(value).strip()
+    if text.endswith('Z') or text.endswith('z'):
+        text = text[:-1] + '+00:00'
+    try:
+        dt = datetime.datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            # 智云不带时区的时间按浙大本地时间解释，与浏览器 new Date 行为一致。
+            dt = dt.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
+def _subtitle_text(value):
+    """清理接口文本，避免 HTML 换行/实体原样落入 TXT。"""
+    if value in (None, ''):
+        return ''
+    text = str(value).replace('\x00', '')
+    text = re.sub(r'(?i)<br\s*/?>', '\n', text)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = html.unescape(text)
+    lines = [re.sub(r'[ \t]+', ' ', line).strip()
+             for line in text.replace('\r\n', '\n').replace('\r', '\n').split('\n')]
+    return '\n'.join(line for line in lines if line).strip()
+
+
+def _normalise_subtitles(data, start_time=''):
+    """
+    兼容智云目前的两类回放字幕：
+      · ainew：BeginSec / EndSec / Text / TransText（相对录播开始的秒数）；
+      · ai：time + zhtext/entext 等字段（绝对时间，需要减去课程开始时间）。
+    返回统一的 {start, end, text, translation} 列表。
+    """
+    records = (data.get('list') if isinstance(data, dict) else None) or []
+    if not records or not isinstance(records[0], dict):
+        return []
+    raw_items = records[0].get('all_content') or []
+    if not isinstance(raw_items, list):
+        return []
+
+    base_time = _subtitle_time_seconds(start_time, absolute=True)
+    rows = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        start = _subtitle_time_seconds(item.get('BeginSec'))
+        end = _subtitle_time_seconds(item.get('EndSec'))
+        if start is None:
+            absolute_time = _subtitle_time_seconds(item.get('time'), absolute=True)
+            if absolute_time is not None and base_time is not None:
+                start = max(0.0, absolute_time - base_time)
+        text = _subtitle_text(
+            item.get('Text') or item.get('zhtext') or item.get('sourcetext')
+            or item.get('text') or item.get('content'))
+        translation = _subtitle_text(
+            item.get('TransText') or item.get('entext') or item.get('transtext')
+            or item.get('translation'))
+        if start is None or not (text or translation):
+            continue
+        rows.append({'start': max(0.0, start), 'end': end,
+                     'text': text, 'translation': translation})
+
+    rows.sort(key=lambda row: row['start'])
+    for i, row in enumerate(rows):
+        end = row.get('end')
+        if end is None or end < row['start']:
+            end = rows[i + 1]['start'] if i + 1 < len(rows) else row['start']
+        row['end'] = max(row['start'], end)
+    return rows
+
+
+def _subtitle_clock(seconds):
+    total = max(0, int(float(seconds or 0)))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    return '%02d:%02d:%02d' % (hours, minutes, secs)
+
+
+def _subtitle_txt(rows):
+    blocks = []
+    for row in rows:
+        # 智云把识别原文和英文翻译分别放在 text / translation 字段。
+        # 导出的学习资料只保留中文原文；没有中文原文的纯翻译行直接跳过。
+        text = row.get('text') or ''
+        if not text:
+            continue
+        start = _subtitle_clock(row['start'])
+        end = _subtitle_clock(row['end'])
+        lines = ['[%s - %s]' % (start, end), text]
+        blocks.append('\n'.join(lines))
+    return '\n\n'.join(blocks) + ('\n' if blocks else '')
+
+
+def fetch_live_subtitles(sub_id, page_view_url, start_time=''):
+    """使用智云回放页同源接口取得一节录播的完整结构化字幕。"""
+    sid = str(sub_id or '').strip()
+    if not re.fullmatch(r'\d+', sid):
+        return {'ok': False, 'error': 'sub_id 无效'}
+    bearer = _cmc_bearer_token(page_view_url)
+    if not bearer:
+        return {'ok': False, 'error': '未能取得智云课堂登录凭证，请重新登录后再试'}
+    url = (CMC_BASE + '/courseapi/v3/web-socket/search-trans-result'
+           '?sub_id=' + urllib.parse.quote(sid) + '&format=json')
+    try:
+        resp = HttpSession(COOKIE_JAR, SSL_CONTEXT, timeout=30).request(
+            'GET', url, headers={'Authorization': 'Bearer ' + bearer,
+                                 'Accept': 'application/json'})
+        if resp.status != 200:
+            return {'ok': False, 'error': '字幕获取失败（HTTP %s）' % resp.status}
+        data = resp.json()
+    except Exception as e:
+        return {'ok': False, 'error': '字幕获取失败：' + str(e)}
+    if not isinstance(data, dict) or data.get('code') != 0:
+        msg = data.get('msg') if isinstance(data, dict) else ''
+        return {'ok': False, 'error': '智云课堂未返回字幕：' + str(msg or '未知错误')}
+    rows = _normalise_subtitles(data, start_time=start_time)
+    if not rows:
+        return {'ok': False, 'error': '该节录播暂无可导出的自动字幕'}
+    return {'ok': True, 'subtitles': rows}
+
+
+def export_live_subtitles(sub_id, page_view_url, course='', fallback_name='',
+                          start_time=''):
+    """取得智云自动字幕，仅保留中文原文并保存到课程资料文件夹。"""
+    result = fetch_live_subtitles(sub_id, page_view_url, start_time=start_time)
+    if not result.get('ok'):
+        return result
+    chinese_rows = [row for row in result['subtitles'] if row.get('text')]
+    if not chinese_rows:
+        return {'ok': False, 'error': '该节录播没有可导出的中文字幕'}
+    if str(course or '').strip():
+        folder, custom = get_course_folder(None, course, create=True)
+        if custom and not os.path.isdir(folder):
+            return {'ok': False, 'error': '该课程绑定的资料文件夹已不存在，请重新选择'}
+    else:
+        folder = get_download_dir()
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception as e:
+        return {'ok': False, 'error': '无法创建课程资料文件夹：' + str(e)}
+
+    base = str(fallback_name or '').strip() or ('智云课堂_%s' % sub_id)
+    base = re.sub(r'[\\/:*?"<>|]', '_', base).strip('. ')[:160]
+    if not base:
+        base = '智云课堂_%s' % sub_id
+    fname = base + '_字幕.txt'
+    stem, ext = os.path.splitext(fname)
+    target = os.path.join(folder, fname)
+    n = 1
+    while os.path.exists(target):
+        target = os.path.join(folder, '%s(%d)%s' % (stem, n, ext))
+        n += 1
+    try:
+        # utf-8-sig 带 BOM，Windows 记事本双击打开也能稳定识别中文。
+        with open(target, 'w', encoding='utf-8-sig', newline='\n') as f:
+            f.write(_subtitle_txt(chinese_rows))
+    except Exception as e:
+        try:
+            os.remove(target)
+        except Exception:
+            pass
+        return {'ok': False, 'error': '字幕保存失败：' + str(e)}
+    return {'ok': True, 'path': target, 'count': len(chinese_rows)}
 
 
 def export_live_ppt(sub_id, page_view_url, course='', fallback_name=''):
@@ -2323,6 +2502,21 @@ class Handler(BaseHTTPRequestHandler):
                     fallback_name=qs.get('name', [''])[0]))
             except Exception as e:
                 self._json({'ok': False, 'error': '导出失败：' + str(e)}, 200)
+            return
+        if path == '/api/lives/export_subtitles':
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            sub_id = qs.get('sub_id', [''])[0]
+            if not sub_id:
+                self._json({'ok': False, 'error': '缺少 sub_id'}, 400)
+                return
+            try:
+                self._json(export_live_subtitles(
+                    sub_id, qs.get('url', [''])[0],
+                    course=qs.get('course', [''])[0],
+                    fallback_name=qs.get('name', [''])[0],
+                    start_time=qs.get('start_time', [''])[0]))
+            except Exception as e:
+                self._json({'ok': False, 'error': '字幕导出失败：' + str(e)}, 200)
             return
 
         self._json({'ok': False, 'error': 'not found'}, 404)
