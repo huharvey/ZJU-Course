@@ -1,0 +1,11 @@
+# 本机登录会话与个人设置/任务（不得提交到仓库）
+session.dat
+manual_tasks.json
+schedule_adjustments.json
+course_folders.json
+download_dir.json
+*.tmp
+
+# Python 运行缓存
+__pycache__/
+*.py[cod]

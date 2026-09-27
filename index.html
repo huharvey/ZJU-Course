@@ -183,7 +183,7 @@
     #app .grid .col, #app .grid > .panel { min-height:0; }
     #app .panel { display:flex; flex-direction:column; overflow:hidden; }
     #app .panel h3 { flex:none; }
-    #app #courses, #app #homeworks { flex:1; min-height:0; overflow-y:auto;
+    #app #courses, #app #homeworks, #app #scheduleView { flex:1; min-height:0; overflow-y:auto;
                                      overscroll-behavior:contain; padding-right:6px; }
     #app #courses::-webkit-scrollbar, #app #homeworks::-webkit-scrollbar { width:8px; }
     #app #courses::-webkit-scrollbar-thumb,
@@ -450,6 +450,13 @@
   .file .dl:active { transform:scale(.96); }
   .file .dl.pv { border-color:var(--green); color:var(--green); }
   .file .dl.pv:hover { background:var(--green); color:#fff; }
+  .local-folder-bar { display:flex; align-items:center; gap:7px; flex-wrap:wrap;
+                      border:1px solid var(--line); background:var(--soft); border-radius:10px;
+                      padding:9px 10px; margin-bottom:10px; }
+  .local-folder-path { flex:1 1 260px; min-width:0; color:var(--muted); font-size:11px;
+                       overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .local-folder-bar .btn { padding:5px 9px; font-size:12px; }
+  .local-source { color:var(--green); font-size:10px; font-weight:700; margin-left:6px; }
 
   /* 课程详情：作业区块 */
   .detail-sec { margin-bottom:22px; }
@@ -559,6 +566,129 @@
   .dot-a { background:var(--amber); } .dot-r { background:var(--red); }
   .dot-n { background:var(--line); }
 
+  /* ---------- 周课表 ---------- */
+  .view-tabs { display:inline-flex; align-items:center; padding:3px; border:1px solid var(--line);
+               border-radius:9px; background:var(--soft); }
+  .view-tab { border:0; background:transparent; color:var(--muted); padding:5px 10px;
+              border-radius:6px; cursor:pointer; font:inherit; font-size:14px; font-weight:650; }
+  .view-tab.active { color:var(--blue); background:var(--card); box-shadow:0 1px 4px rgba(15,23,42,.10); }
+  #mainGrid.schedule-mode { grid-template-columns:minmax(0,1fr); }
+  #mainGrid.schedule-mode #courseCol { grid-column:1/-1; }
+  #mainGrid.schedule-mode > .panel { display:none; }
+  #mainGrid.schedule-mode #courseSearch { display:none; }
+  #mainGrid.schedule-mode #semesterSel { display:none; }
+  #mainGrid.schedule-mode #coursePanel { min-height:0; }
+  #scheduleView { flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; }
+  #scheduleView[hidden] { display:none; }
+  .week-toolbar { display:flex; align-items:center; gap:7px; flex:none; }
+  .week-toolbar .btn { height:32px; padding:5px 10px; }
+  .week-title { flex:1; min-width:0; text-align:center; display:flex; flex-direction:column; gap:1px; }
+  .week-title strong { font-size:15px; }
+  .week-title span { font-size:11px; color:var(--muted); }
+  .schedule-notice { flex:none; border:1px solid #fde68a; background:#fffbeb; color:#92400e;
+                     border-radius:8px; padding:7px 10px; font-size:12px; }
+  .schedule-todo-panel { flex:none; max-height:220px; overflow:auto; border:1px solid var(--hoverbd);
+                         border-radius:10px; background:var(--card); padding:11px 13px;
+                         box-shadow:0 8px 22px rgba(15,23,42,.08); }
+  .st-head { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  .st-head strong { flex:1; }
+  .st-close { border:0; background:none; color:var(--muted); cursor:pointer; font-size:17px; }
+  .st-warning { margin:-2px 0 8px; color:#b45309; font-size:11px; }
+  .st-sections { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+  .st-sec { min-width:0; border-left:2px solid var(--line); padding-left:9px; }
+  .st-sec h4 { margin:0 0 5px; font-size:12px; color:var(--muted); }
+  .st-list { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:4px; }
+  .st-list li { font-size:12px; line-height:1.35; min-width:0; word-break:break-word; }
+  .st-list a, .st-link { color:var(--blue); text-decoration:none; cursor:pointer; border:0;
+                         padding:0; background:none; font:inherit; text-align:left; }
+  .st-file-row { display:flex; align-items:center; gap:5px; min-width:0; }
+  .st-file-row .st-link { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .st-file-download { flex:none; border:1px solid var(--line); border-radius:5px; background:var(--card);
+                      color:var(--blue); cursor:pointer; padding:1px 5px; font-size:10px; }
+  .st-file-download:hover { border-color:var(--blue); background:var(--hover); }
+  .st-local-badge { display:inline-block; margin-left:5px; padding:1px 5px; border-radius:999px;
+                    background:#dcfce7; color:#15803d; font-size:9px; font-weight:700; }
+  .st-done { color:var(--muted); text-decoration:line-through; }
+  .st-add { display:flex; gap:5px; margin-top:6px; flex-wrap:wrap; }
+  .st-add input { min-width:0; flex:1; border:1px solid var(--line); border-radius:7px;
+                  padding:5px 7px; background:var(--card); color:var(--text); font-size:12px; }
+  .st-add input[type="date"] { flex:0 0 142px; }
+  .st-add .btn { height:29px; padding:4px 8px; font-size:12px; }
+  .st-del { border:0; background:none; color:var(--muted); cursor:pointer; padding:0 3px; }
+  .st-del:hover { color:var(--red); }
+
+  .week-grid { flex:1; min-height:0; overflow:auto; position:relative; border:1px solid var(--line);
+               border-radius:10px; background:var(--card); overscroll-behavior:contain; }
+  .week-grid-inner { display:grid; min-width:980px; grid-template-columns:58px repeat(7,minmax(128px,1fr));
+                     grid-template-rows:54px 84px repeat(13,48px); position:relative; }
+  .wg-corner, .wg-day, .wg-period, .wg-cell, .wg-task-cell { border-right:1px solid var(--line);
+                                               border-bottom:1px solid var(--line); }
+  .wg-corner { position:sticky; left:0; top:0; z-index:8; background:var(--soft);
+               display:flex; align-items:center; justify-content:center; font-size:12px; color:var(--muted); }
+  .wg-day { position:sticky; top:0; z-index:7; background:var(--soft); text-align:center;
+            padding:7px 3px; font-size:12px; }
+  .wg-day strong { display:block; font-size:13px; margin-bottom:2px; }
+  .wg-day.today { color:var(--blue); background:var(--hover); }
+  .wg-day.adjusted { box-shadow:inset 0 3px 0 #f59e0b; }
+  .wg-period { position:sticky; left:0; z-index:5; background:var(--card); display:flex;
+               align-items:center; justify-content:center; font-size:11px; color:var(--muted); }
+  .wg-task-cell { padding:5px; overflow:auto; background:var(--soft); }
+  .day-task-list { display:flex; flex-direction:column; gap:4px; min-width:0; }
+  .day-task { display:block; width:100%; min-width:0; border:1px solid var(--line); border-radius:6px;
+              padding:4px 5px; text-align:left; background:var(--card); color:var(--text);
+              cursor:pointer; font:inherit; font-size:10px; line-height:1.25; }
+  .day-task:hover { border-color:var(--blue); color:var(--blue); }
+  .day-task.done { opacity:.58; text-decoration:line-through; }
+  .day-task-course { display:block; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .day-task-title { display:block; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .day-task-kind { float:right; color:var(--blue); font-size:9px; }
+  .wg-cell { background:linear-gradient(180deg,transparent,rgba(148,163,184,.018)); }
+  .wg-cell.holiday { background:repeating-linear-gradient(135deg,transparent,transparent 7px,
+                    rgba(239,68,68,.035) 7px,rgba(239,68,68,.035) 14px); }
+  .sc-card { z-index:3; margin:3px; padding:7px 8px; border-radius:8px; border:1px solid color-mix(in srgb,var(--accent),#fff 45%);
+             border-left:3px solid var(--accent); background:color-mix(in srgb,var(--accent),var(--card) 86%);
+             overflow:auto; min-width:0; box-shadow:0 2px 7px rgba(15,23,42,.06); }
+  .sc-course + .sc-course { border-top:1px dashed color-mix(in srgb,var(--accent),var(--line) 55%);
+                            margin-top:5px; padding-top:5px; }
+  .sc-name { font-weight:700; font-size:12px; line-height:1.3; cursor:pointer; }
+  .sc-meta { color:var(--muted); font-size:10px; margin-top:2px; line-height:1.3; }
+  .sc-tools { display:flex; gap:4px; flex-wrap:wrap; margin-top:5px; }
+  .sc-chip { border:0; border-radius:999px; background:rgba(255,255,255,.55); color:var(--text);
+             font-size:9px; padding:2px 6px; cursor:pointer; }
+  .sc-chip:hover { color:var(--blue); }
+  .sc-chip.hw { color:#2563eb; }
+  .sc-chip.todo { color:#b45309; }
+  .detail-sec.jump-highlight { animation:detailJump 1.25s ease; }
+  @keyframes detailJump { 0%,100% { box-shadow:none; } 35% { box-shadow:0 0 0 3px rgba(59,130,246,.28); } }
+  .wg-empty { grid-column:2/9; align-self:start; justify-self:center; z-index:2; margin-top:70px;
+              color:var(--muted); font-size:13px; }
+  @media (max-width:1000px) { .st-sections { grid-template-columns:1fr 1fr; } }
+  @media (max-width:620px) { .st-sections { grid-template-columns:1fr; } }
+  html[data-theme="dark"] .schedule-notice { background:#332a12; color:#fbbf24; border-color:#5c4a1c; }
+  html[data-theme="dark"] .sc-chip { background:rgba(15,23,42,.35); }
+  .sc-card.local-move { box-shadow:inset 0 0 0 2px #f59e0b,0 2px 7px rgba(15,23,42,.06); }
+  .sc-local-tag { color:#b45309; font-size:9px; font-weight:700; margin-bottom:3px; }
+  .schedule-edit-win { width:min(92vw,590px); }
+  .schedule-edit-body { padding:16px 22px 22px; overflow:auto; }
+  .se-summary { padding:10px 12px; border:1px solid var(--line); border-radius:10px;
+                background:var(--soft); margin-bottom:13px; font-size:13px; line-height:1.55; }
+  .se-actions { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin-bottom:13px; }
+  .se-actions label { border:1px solid var(--line); border-radius:9px; padding:9px;
+                      cursor:pointer; font-size:12px; text-align:center; }
+  .se-actions label:has(input:checked) { border-color:var(--blue); color:var(--blue); background:var(--hover); }
+  .se-actions input { margin-right:4px; }
+  .se-fields { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .se-fields[hidden] { display:none; }
+  .se-field { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; }
+  .se-field.wide { grid-column:1/-1; }
+  .se-field input, .se-field select { width:100%; border:1px solid var(--line); border-radius:8px;
+                    padding:8px 9px; background:var(--card); color:var(--text); font:inherit; }
+  .se-foot { display:flex; justify-content:flex-end; gap:8px; margin-top:15px; }
+  .adjustment-row { display:flex; align-items:flex-start; gap:10px; padding:10px 0;
+                    border-bottom:1px solid var(--line); font-size:12px; }
+  .adjustment-row:last-child { border-bottom:0; }
+  .adjustment-row > div { flex:1; min-width:0; }
+
   /* 用户系统开启「减少动态效果」时，关掉所有过渡动画 */
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration:.01ms !important; animation-delay:0ms !important;
@@ -648,17 +778,36 @@
     </div>
   </div>
   <div class="hint" id="meta">加载中…</div>
-  <div class="grid" style="margin-top:14px">
-    <div class="col">
+  <div class="grid" id="mainGrid" style="margin-top:14px">
+    <div class="col" id="courseCol">
       <input id="courseSearch" type="search" placeholder="🔍 搜索课程名…" autocomplete="off" />
-      <div class="panel">
-        <h3><span>我的课程</span>
+      <div class="panel" id="coursePanel">
+        <h3><span class="view-tabs" aria-label="课程视图切换">
+            <button type="button" class="view-tab active" data-view="list">我的课程</button>
+            <button type="button" class="view-tab" data-view="schedule">周课表</button>
+          </span>
           <span class="hd-tools">
             <span class="count" id="courseCount"></span>
             <select id="semesterSel"><option value="">全部学期</option></select>
           </span>
         </h3>
         <div id="courses"><div class="empty">加载中…</div></div>
+        <div id="scheduleView" hidden>
+          <div class="week-toolbar">
+            <button class="btn" id="weekPrev" title="上一周">←</button>
+            <button class="btn" id="weekToday">本周</button>
+            <div class="week-title">
+              <strong id="weekRange">加载中…</strong>
+              <span id="weekMeta"></span>
+            </div>
+            <button class="btn" id="weekNext" title="下一周">→</button>
+            <button class="btn" id="scheduleAdjustments" title="查看和恢复本地调整">本地调整</button>
+            <button class="btn" id="weekRefresh" title="刷新 ETA 课表">↻</button>
+          </div>
+          <div id="scheduleNotice" class="schedule-notice" hidden></div>
+          <div id="scheduleTodoPanel" class="schedule-todo-panel" hidden></div>
+          <div id="weekGrid" class="week-grid"><div class="empty">正在加载课表…</div></div>
+        </div>
       </div>
     </div>
     <div class="panel">
@@ -758,6 +907,20 @@
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- ===== 课表本地调整：右键课程打开，不修改 ETA 原始课表 ===== -->
+<div id="scheduleEditMask" class="course-mask" style="display:none">
+  <div class="settings-win schedule-edit-win" role="dialog" aria-modal="true" aria-label="调整课程时间">
+    <div class="course-top">
+      <div class="course-t">
+        <h1 id="scheduleEditTitle">调整课程</h1>
+        <div class="hint">调整只保存在本机，不会修改学校课表</div>
+      </div>
+      <button class="course-close" id="scheduleEditClose" title="关闭 (Esc)">✕</button>
+    </div>
+    <div class="schedule-edit-body" id="scheduleEditBody"></div>
   </div>
 </div>
 
@@ -964,6 +1127,501 @@ let DATA = { courses: [], homeworks: [], activeIds: new Set() };
 // 成绩数据缓存：随课程数据一起刷新，打开成绩弹窗可秒显
 let GRADES = null;
 
+// ---- ETA 周课表 + 课程内聚合待办 ----
+let COURSE_VIEW = "list";
+let SCHEDULE = { weekStart: "", data: null, loading: false, request: 0 };
+let SCHEDULE_COURSES = {};
+let SCHEDULE_RESOURCES = {};
+let SCHEDULE_LOCAL_FILES = {};
+let SCHEDULE_DAY_TASKS = {};
+let TODO_CTX = null;
+let SCHEDULE_EDIT_CTX = null;
+
+const WEEKDAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+const pad2 = n => String(n).padStart(2, "0");
+function localDateISO(d) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+function addDaysISO(iso, days) {
+  const d = iso ? new Date(iso + "T12:00:00") : new Date();
+  d.setDate(d.getDate() + days);
+  return localDateISO(d);
+}
+function currentMondayISO() {
+  const d = new Date();
+  const wd = d.getDay() || 7;
+  d.setDate(d.getDate() - wd + 1);
+  return localDateISO(d);
+}
+function fmtMD(iso) {
+  const p = String(iso || "").split("-");
+  return p.length === 3 ? `${+p[1]}月${+p[2]}日` : iso;
+}
+function courseHue(name) {
+  let h = 0;
+  for (const ch of String(name || "")) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return h;
+}
+function scheduleHomeworkStat(course) {
+  const list = DATA.homeworks.filter(h => course.course_id != null &&
+    String(h.course_id) === String(course.course_id));
+  return { all: list.length, todo: list.filter(h => !h.submitted && (h.status || "ongoing") === "ongoing").length };
+}
+function scheduleDatePart(value) {
+  const m = String(value || "").match(/^(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : "";
+}
+function scheduleTaskDeadline(value) {
+  const s = String(value || "").replace("T", " ").replace(/Z$/, "");
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : s;
+}
+function scheduleTasksForDay(day) {
+  const target = String(day?.date || "");
+  const out = [];
+  (DATA.homeworks || []).forEach(h => {
+    const due = h.deadline || h.end_time;
+    if (scheduleDatePart(due) !== target) return;
+    out.push({kind:"homework", course_id:h.course_id, course_name:h.course || "课程",
+      title:h.title || "作业", deadline:due, done:!!h.submitted, homework_id:h.id});
+  });
+  (SCHEDULE.data?.manual_tasks || []).forEach(t => {
+    if (scheduleDatePart(t.deadline) !== target) return;
+    out.push({kind:"manual", course_id:t.course_id, course_name:t.course_name || "课程",
+      title:t.title || "待办", deadline:t.deadline, done:!!t.done, task_id:t.id});
+  });
+  return out.sort((a,b) => {
+    const byDeadline = String(a.deadline || "").localeCompare(String(b.deadline || ""));
+    return byDeadline || String(a.title || "").localeCompare(String(b.title || ""));
+  });
+}
+function renderDayTasks(day) {
+  const tasks = scheduleTasksForDay(day);
+  if (!tasks.length) return `<div class="hint" style="font-size:10px">暂无截止任务</div>`;
+  return `<div class="day-task-list">${tasks.map((task, i) => {
+    const ref = `dt${Object.keys(SCHEDULE_DAY_TASKS).length}_${i}`;
+    SCHEDULE_DAY_TASKS[ref] = task;
+    return `<button class="day-task ${task.done ? "done" : ""}" onclick="openScheduleDayTask(event,'${ref}')" title="截止 ${esc(scheduleTaskDeadline(task.deadline))}">
+      <span class="day-task-kind">${task.kind === "homework" ? "作业" : "待办"}</span>
+      <span class="day-task-course">${esc(task.course_name)}</span><span class="day-task-title">${esc(task.title)}</span></button>`;
+  }).join("")}</div>`;
+}
+
+function switchCourseView(view) {
+  COURSE_VIEW = view === "schedule" ? "schedule" : "list";
+  document.querySelectorAll(".view-tab").forEach(b => b.classList.toggle("active", b.dataset.view === COURSE_VIEW));
+  const schedule = COURSE_VIEW === "schedule";
+  $("#mainGrid").classList.toggle("schedule-mode", schedule);
+  $("#courses").hidden = schedule;
+  $("#scheduleView").hidden = !schedule;
+  $("#courseCount").textContent = schedule ? "" : `共 ${DATA.courses.length} 门`;
+  if (schedule && !SCHEDULE.data) loadSchedule(false);
+}
+
+async function loadSchedule(force = false) {
+  const request = ++SCHEDULE.request;
+  SCHEDULE.loading = true;
+  $("#weekGrid").innerHTML = skeletonHtml("course", 5);
+  $("#scheduleTodoPanel").hidden = true;
+  const q = new URLSearchParams();
+  if (SCHEDULE.weekStart) q.set("start", SCHEDULE.weekStart);
+  if (force) q.set("force", "1");
+  const res = await api("/api/timetable?" + q.toString());
+  if (request !== SCHEDULE.request) return;
+  SCHEDULE.loading = false;
+  if (!res.ok) {
+    $("#weekGrid").innerHTML = emptyBox("⚠️", "课表加载失败：" + (res.error || "未知错误"));
+    $("#weekMeta").textContent = "请确认当前网络能访问 ETA，或退出后重新登录";
+    return;
+  }
+  SCHEDULE.data = res;
+  SCHEDULE.weekStart = res.week_start;
+  renderWeekSchedule();
+}
+
+function renderWeekSchedule() {
+  const d = SCHEDULE.data;
+  if (!d) return;
+  $("#weekRange").textContent = `${fmtMD(d.week_start)} — ${fmtMD(d.week_end)}`;
+  const cur = d.current || {};
+  const parts = [cur.academic_year, cur.semester, cur.teaching_week ? `第 ${cur.teaching_week} 周` : ""].filter(Boolean);
+  $("#weekMeta").textContent = parts.join(" · ") + (d.local_now ? ` · 本机时间 ${String(d.local_now).slice(0, 16).replace("T", " ")}` : "") + " · 右键课程可调整";
+  const adjustmentCount = (d.adjustments || []).length;
+  $("#scheduleAdjustments").textContent = adjustmentCount ? `本地调整 ${adjustmentCount}` : "本地调整";
+
+  const notices = (d.days || []).filter(x => x.notice).map(x => `${fmtMD(x.date)}：${x.notice}`);
+  $("#scheduleNotice").hidden = !notices.length;
+  $("#scheduleNotice").textContent = notices.join("　");
+  SCHEDULE_COURSES = {};
+  SCHEDULE_DAY_TASKS = {};
+  let seq = 0, html = `<div class="week-grid-inner">`;
+  html += `<div class="wg-corner" style="grid-column:1;grid-row:1">节次</div>`;
+  (d.days || []).forEach((day, i) => {
+    const adjusted = day.source_date && day.source_date !== day.date;
+    const sub = adjusted
+      ? `按${WEEKDAY_CN[(day.source_weekday || 1) - 1]} · ${day.segment || ""}${day.teaching_week ? day.teaching_week + "周" : ""}`
+      : (day.cancelled ? "停课" : `${day.segment || ""}${day.teaching_week ? day.teaching_week + "周" : ""}`);
+    html += `<div class="wg-day ${day.is_today ? "today" : ""} ${adjusted ? "adjusted" : ""}"
+                  style="grid-column:${i + 2};grid-row:1" title="${esc(day.notice || "")}">
+               <strong>${fmtMD(day.date)} ${WEEKDAY_CN[i]}</strong><span>${esc(sub)}</span></div>`;
+  });
+  html += `<div class="wg-period" style="grid-column:1;grid-row:2">当天任务</div>`;
+  (d.days || []).forEach((day, i) => {
+    html += `<div class="wg-task-cell" style="grid-column:${i + 2};grid-row:2">${renderDayTasks(day)}</div>`;
+  });
+  for (let p = 1; p <= 13; p++) {
+    html += `<div class="wg-period" style="grid-column:1;grid-row:${p + 2}">第${p}节</div>`;
+    (d.days || []).forEach((day, i) => {
+      html += `<div class="wg-cell ${day.cancelled ? "holiday" : ""}"
+                    style="grid-column:${i + 2};grid-row:${p + 2}"></div>`;
+    });
+  }
+
+  let blockCount = 0;
+  const reminderShown = new Set();
+  (d.days || []).forEach((day, dayIndex) => {
+    (day.blocks || []).forEach(block => {
+      const start = Math.max(1, Math.min(13, Number(block.start_period) || 1));
+      const span = Math.max(1, Math.min(14 - start, Number(block.period_count) || 1));
+      const first = (block.courses || [])[0] || {};
+      const hue = courseHue(first.name);
+      const coursesHtml = (block.courses || []).map(course => {
+        const ref = "sc" + (++seq);
+        SCHEDULE_COURSES[ref] = Object.assign({}, course, {
+          display_date: day.date,
+          display_start_period: block.start_period,
+          display_period_count: block.period_count,
+        });
+        const hs = scheduleHomeworkStat(course);
+        const manualAll = Number(course.manual_task_count || 0);
+        const manualTodo = Number(course.manual_task_todo || 0);
+        const canTodo = course.course_id != null;
+        const reminderKey = course.course_id != null ? `id:${course.course_id}` : `name:${course.name || ""}`;
+        const showReminder = !reminderShown.has(reminderKey);
+        reminderShown.add(reminderKey);
+        return `<div class="sc-course" oncontextmenu="openScheduleEdit(event,'${ref}')" title="右键可调整本次课程">
+          ${course.local_adjustment ? `<div class="sc-local-tag">本地调课</div>` : ""}
+          <div class="sc-name" title="${esc(course.raw_time || "")}" ${canTodo ? `onclick="openScheduleCourse('${ref}')"` : ""}>${esc(course.name)}</div>
+          <div class="sc-meta">${esc([course.room, course.teacher].filter(Boolean).join(" · ") || "教室/教师待同步")}</div>
+          <div class="sc-tools">
+            ${showReminder && (hs.todo || hs.all) ? `<button class="sc-chip hw" onclick="openScheduleHomework(event,'${ref}')">${hs.todo ? `⏰ ${hs.todo} 作业` : `✓ ${hs.all} 作业`}</button>` : ""}
+            ${showReminder && manualAll ? `<button class="sc-chip todo" onclick="openScheduleTodo(event,'${ref}')">${manualTodo ? `🗒 ${manualTodo} 待办` : `✓ ${manualAll} 待办`}</button>` : ""}
+            <button class="sc-chip" ${canTodo ? `onclick="openScheduleTodo(event,'${ref}')"` : "disabled"}>课件 · 回放</button>
+          </div>
+        </div>`;
+      }).join("");
+      html += `<div class="sc-card ${block.local_adjustment ? "local-move" : ""}" style="--accent:hsl(${hue} 68% 48%);grid-column:${dayIndex + 2};grid-row:${start + 2}/span ${span}">${coursesHtml}</div>`;
+      blockCount++;
+    });
+  });
+  if (!blockCount) html += `<div class="wg-empty">这一周没有匹配到课程</div>`;
+  html += `</div>`;
+  $("#weekGrid").innerHTML = html;
+}
+
+async function loadScheduleTodo(course) {
+  if (!course || course.course_id == null) return;
+  TODO_CTX = course;
+  const panel = $("#scheduleTodoPanel");
+  panel.hidden = false;
+  panel.innerHTML = `<div class="st-head"><strong>${esc(course.name)}</strong><button class="st-close" onclick="closeScheduleTodo()">✕</button></div><div class="hint">正在汇总学在浙大、智云课堂与自定义任务…</div>`;
+  const q = `course_id=${encodeURIComponent(course.course_id)}&course_name=${encodeURIComponent(course.name)}`;
+  const data = await api("/api/course-todos?" + q);
+  if (!data.ok) {
+    panel.innerHTML = `<div class="st-head"><strong>${esc(course.name)}</strong><button class="st-close" onclick="closeScheduleTodo()">✕</button></div><div class="empty">${esc(data.error || "待办加载失败")}</div>`;
+    return;
+  }
+  renderScheduleTodo(data);
+}
+async function openScheduleTodo(ev, ref) {
+  if (ev) ev.stopPropagation();
+  await loadScheduleTodo(SCHEDULE_COURSES[ref]);
+}
+
+async function openScheduleDayTask(ev, ref) {
+  if (ev) ev.stopPropagation();
+  const task = SCHEDULE_DAY_TASKS[ref];
+  if (!task) return;
+  if (task.kind === "homework" && task.course_id != null) {
+    await openDetail(Number(task.course_id), task.course_name);
+    const section = $("#sec-hw");
+    if (section) {
+      section.scrollIntoView({behavior:"smooth", block:"start"});
+      section.classList.remove("jump-highlight");
+      void section.offsetWidth;
+      section.classList.add("jump-highlight");
+    }
+    return;
+  }
+  if (task.kind === "manual" && task.course_id != null) {
+    const course = Object.values(SCHEDULE_COURSES).find(c =>
+      c && c.course_id != null && String(c.course_id) === String(task.course_id)) ||
+      {course_id:task.course_id, name:task.course_name};
+    await loadScheduleTodo(course);
+  }
+}
+
+function openScheduleCourse(ref) {
+  const course = SCHEDULE_COURSES[ref];
+  if (course && course.course_id != null) openDetail(Number(course.course_id), course.name);
+}
+
+async function openScheduleHomework(ev, ref) {
+  if (ev) ev.stopPropagation();
+  const course = SCHEDULE_COURSES[ref];
+  if (!course || course.course_id == null) return;
+  await openDetail(Number(course.course_id), course.name);
+  const section = $("#sec-hw");
+  if (section) {
+    section.scrollIntoView({behavior:"smooth", block:"start"});
+    section.classList.remove("jump-highlight");
+    void section.offsetWidth;
+    section.classList.add("jump-highlight");
+  }
+}
+
+function renderScheduleTodo(data) {
+  const panel = $("#scheduleTodoPanel");
+  SCHEDULE_RESOURCES = {};
+  SCHEDULE_LOCAL_FILES = {};
+  const warnings = (data.warnings || []).length
+    ? `<div class="st-warning">${(data.warnings || []).map(esc).join("　")}</div>` : "";
+  const hw = (data.homeworks || []).map(h => `<li class="${h.submitted ? "st-done" : ""}">${h.submitted ? "✓" : "○"} ${esc(h.title || "作业")}${h.deadline ? `<div class="hint">${esc(String(h.deadline).replace("T", " ").replace("Z", ""))}</div>` : ""}</li>`).join("") || `<li class="hint">暂无作业</li>`;
+  const localFiles = data.local_files || [];
+  const localNames = new Set(localFiles.map(r => String(r.name || "").trim().toLowerCase()));
+  const platformResources = (data.resources || []).filter(r => {
+    const name = String(r.name || "").trim();
+    // 本地同名 PDF 优先，平台重复项不再显示。
+    return !(name && fileExt(name) === "pdf" && localNames.has(name.toLowerCase()));
+  }).map((r, i) => {
+    const key = "sr" + i; SCHEDULE_RESOURCES[key] = r;
+    if (r.id != null) {
+      DETAIL_FILES[r.id] = r.name || "";
+      DETAIL_COURSE[r.id] = data.course_name || "";
+      DETAIL_COURSE_ID_BY_UPLOAD[r.id] = data.course_id;
+    }
+    const label = r.name || r.activity || "课件";
+    const canDownload = r.id != null && fileExt(label) === "pdf";
+    return `<li class="st-file-row"><button class="st-link" onclick="previewScheduleResource('${key}',this)">📎 ${esc(label)}</button>${canDownload ? `<button class="st-file-download" onclick="downloadScheduleResource(event,'${key}')">下载</button>` : ""}</li>`;
+  }).join("");
+  const localResources = localFiles.map((r, i) => {
+    const key = "sl" + i;
+    SCHEDULE_LOCAL_FILES[key] = {name:r.name, course_id:data.course_id, course_name:data.course_name};
+    return `<li><button class="st-link" onclick="openScheduleLocalPdf('${key}')">📄 ${esc(r.name || "本地 PDF")}<span class="st-local-badge">本地 · 系统打开</span></button></li>`;
+  }).join("");
+  // 本地资料排在前面；平台同名 PDF 已在上面过滤掉。
+  const resources = localResources + platformResources || `<li class="hint">暂无平台课件或本地 PDF</li>`;
+  const lives = (data.lives || []).slice(0, 12).map(l => {
+    const href = /^https?:\/\//i.test(l.page_view_url || "") ? l.page_view_url : "#";
+    return `<li><a href="${esc(href)}" target="_blank" rel="noopener">▶ ${esc(l.title || l.start_time || "课堂回放")}</a></li>`;
+  }).join("") || `<li class="hint">暂无智云回放</li>`;
+  const manual = (data.manual_tasks || []).map(t => `<li class="${t.done ? "st-done" : ""}">
+      <label><input type="checkbox" ${t.done ? "checked" : ""} onchange="toggleManualTask('${t.id}',this.checked)" /> ${esc(t.title)}</label>
+      <button class="st-del" onclick="deleteManualTask('${t.id}')" title="删除">×</button>
+      <div class="hint">截止：${esc(t.deadline ? scheduleTaskDeadline(t.deadline) : "未设置")}</div></li>`).join("") || `<li class="hint">还没有自定义任务</li>`;
+  panel.innerHTML = `<div class="st-head"><strong>${esc(data.course_name || TODO_CTX.name)}</strong><button class="st-close" onclick="closeScheduleTodo()">✕</button></div>
+    ${warnings}
+    <div class="st-sections">
+      <section class="st-sec"><h4>作业</h4><ul class="st-list">${hw}</ul></section>
+      <section class="st-sec"><h4>课件</h4><ul class="st-list">${resources}</ul></section>
+      <section class="st-sec"><h4>智云回放</h4><ul class="st-list">${lives}</ul></section>
+      <section class="st-sec"><h4>我的任务</h4><ul class="st-list">${manual}</ul>
+        <div class="st-add"><input id="manualTaskInput" placeholder="添加任务…" maxlength="300" onkeydown="if(event.key==='Enter')addManualTask()" /><input id="manualTaskDeadline" type="date" title="截止日期" onkeydown="if(event.key==='Enter')addManualTask()" /><button class="btn" onclick="addManualTask()">添加</button></div>
+      </section>
+    </div>`;
+}
+
+function closeScheduleTodo() { $("#scheduleTodoPanel").hidden = true; TODO_CTX = null; }
+function previewScheduleResource(key, btn) {
+  const r = SCHEDULE_RESOURCES[key];
+  if (r && r.id != null) previewFile(r.id, btn);
+}
+async function downloadScheduleResource(ev, key) {
+  if (ev) ev.stopPropagation();
+  const r = SCHEDULE_RESOURCES[key];
+  if (r && r.id != null) {
+    await downloadUpload(r.id);
+    // 下载后立即重新扫描课程文件夹：该 PDF 会从平台列表转为本地优先列表。
+    await reloadScheduleTodo();
+  }
+}
+async function openScheduleLocalPdf(key) {
+  const file = SCHEDULE_LOCAL_FILES[key];
+  if (!file) return;
+  const data = await api("/api/course-folder", {method:"POST", body:JSON.stringify({
+    action:"open_file", course_id:file.course_id, course_name:file.course_name, name:file.name
+  })});
+  if (!data.ok) showToast(data.error || "无法用默认应用打开 PDF", "err");
+}
+async function reloadScheduleTodo() {
+  if (!TODO_CTX) return;
+  const q = `course_id=${encodeURIComponent(TODO_CTX.course_id)}&course_name=${encodeURIComponent(TODO_CTX.name)}`;
+  const data = await api("/api/course-todos?" + q);
+  if (data.ok) {
+    const all = SCHEDULE.data?.manual_tasks || [];
+    const cid = data.course_id;
+    const name = String(data.course_name || "").replace(/\s+/g, "").toLowerCase();
+    SCHEDULE.data.manual_tasks = all.filter(t => {
+      const sameId = cid != null && t.course_id != null && String(t.course_id) === String(cid);
+      const sameName = name && String(t.course_name || "").replace(/\s+/g, "").toLowerCase() === name;
+      return !(sameId || sameName);
+    }).concat(data.manual_tasks || []);
+    updateScheduleManualSummary(data.course_id, data.course_name, data.manual_tasks || []);
+    renderWeekSchedule();
+    renderScheduleTodo(data);
+  }
+}
+function updateScheduleManualSummary(courseId, courseName, tasks) {
+  const all = tasks.length;
+  const todo = tasks.filter(t => !t.done).length;
+  const name = String(courseName || "").replace(/\s+/g, "").toLowerCase();
+  (SCHEDULE.data?.days || []).forEach(day => (day.blocks || []).forEach(block =>
+    (block.courses || []).forEach(course => {
+      const sameId = courseId != null && course.course_id != null && String(course.course_id) === String(courseId);
+      const sameName = name && String(course.name || "").replace(/\s+/g, "").toLowerCase() === name;
+      if (sameId || sameName) {
+        course.manual_task_count = all;
+        course.manual_task_todo = todo;
+      }
+    })));
+}
+async function addManualTask() {
+  if (!TODO_CTX) return;
+  const input = $("#manualTaskInput");
+  const title = (input?.value || "").trim();
+  if (!title) return;
+  const deadline = $("#manualTaskDeadline")?.value || "";
+  if (!deadline) { showToast("请填写任务截止日期", "err"); return; }
+  const r = await api("/api/manual-task", { method:"POST", body:JSON.stringify({
+    action:"create", course_id:TODO_CTX.course_id, course_name:TODO_CTX.name, title, deadline
+  })});
+  if (r.ok) reloadScheduleTodo(); else showToast(r.error || "任务保存失败", "err");
+}
+async function toggleManualTask(id, done) {
+  const r = await api("/api/manual-task", { method:"POST", body:JSON.stringify({action:"toggle", id, done}) });
+  if (r.ok) reloadScheduleTodo(); else showToast(r.error || "任务保存失败", "err");
+}
+async function deleteManualTask(id) {
+  const r = await api("/api/manual-task", { method:"POST", body:JSON.stringify({action:"delete", id}) });
+  if (r.ok) reloadScheduleTodo(); else showToast(r.error || "任务删除失败", "err");
+}
+
+function schedulePeriodLabel(p) { return Number(p) === 0 ? "早晨" : `第 ${p} 节`; }
+function closeScheduleEdit() {
+  $("#scheduleEditMask").style.display = "none";
+  SCHEDULE_EDIT_CTX = null;
+}
+function syncScheduleEditFields() {
+  const kind = document.querySelector('input[name="scheduleEditKind"]:checked')?.value;
+  const fields = $("#scheduleMoveFields");
+  if (fields) fields.hidden = kind !== "move_once";
+  const note = $("#scheduleActionNote");
+  if (!note) return;
+  note.textContent = kind === "cancel_once"
+    ? "只隐藏当前日期的这一节，下一周仍按官方课表显示。"
+    : kind === "hide_series"
+      ? "本学期中这个固定时段都不再显示，可在“本地调整”中恢复。"
+      : "原日期的课程会隐藏，并在新日期和节次显示。";
+}
+function syncScheduleCountLimit() {
+  const start = Number($("#scheduleNewPeriod")?.value || 0);
+  const select = $("#scheduleNewCount");
+  if (!select) return;
+  Array.from(select.options).forEach(o => o.disabled = Number(o.value) > 14 - start);
+  if (Number(select.value) > 14 - start) select.value = String(14 - start);
+}
+function openScheduleEdit(ev, ref) {
+  if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+  const c = SCHEDULE_COURSES[ref];
+  if (!c) return;
+  SCHEDULE_EDIT_CTX = c;
+  $("#scheduleEditTitle").textContent = "调整「" + (c.name || "课程") + "」";
+  const options = Array.from({length:14}, (_, p) =>
+    `<option value="${p}" ${p === Number(c.display_start_period) ? "selected" : ""}>${schedulePeriodLabel(p)}</option>`).join("");
+  const countOptions = Array.from({length:14}, (_, i) => i + 1).map(n =>
+    `<option value="${n}" ${n === Number(c.display_period_count || 1) ? "selected" : ""}>${n} 节</option>`).join("");
+  const originalDate = c.original_occurrence_date || c.occurrence_date || c.display_date;
+  $("#scheduleEditBody").innerHTML = `
+    <div class="se-summary"><strong>${esc(c.name)}</strong><br>
+      ${esc(fmtMD(c.display_date))} · ${schedulePeriodLabel(c.display_start_period)}起 ·
+      ${esc([c.room,c.teacher].filter(Boolean).join(" · ") || "教室/教师未填写")}
+      ${c.local_adjustment ? `<br><span style="color:#b45309">当前是本地调课结果，原日期为 ${esc(fmtMD(originalDate))}</span>` : ""}
+    </div>
+    <div class="se-actions">
+      <label><input type="radio" name="scheduleEditKind" value="move_once" checked>调到其他时间</label>
+      <label><input type="radio" name="scheduleEditKind" value="cancel_once">仅本次不上</label>
+      <label><input type="radio" name="scheduleEditKind" value="hide_series">本学期隐藏</label>
+    </div>
+    <div class="hint" id="scheduleActionNote"></div>
+    <div class="se-fields" id="scheduleMoveFields" style="margin-top:10px">
+      <label class="se-field">新的日期<input type="date" id="scheduleNewDate" value="${esc(c.display_date)}"></label>
+      <label class="se-field">开始节次<select id="scheduleNewPeriod">${options}</select></label>
+      <label class="se-field">持续节数<select id="scheduleNewCount">${countOptions}</select></label>
+      <label class="se-field">新教室（可不填）<input id="scheduleNewRoom" maxlength="200" placeholder="沿用 ${esc(c.room || "原教室")}" value="${esc(c.local_adjustment ? c.room || "" : "")}"></label>
+    </div>
+    <div class="se-foot">
+      ${c.adjustment_id ? `<button class="btn" onclick="deleteScheduleAdjustment('${esc(c.adjustment_id)}')">恢复官方安排</button>` : ""}
+      <button class="btn" onclick="closeScheduleEdit()">取消</button>
+      <button class="btn primary" id="scheduleEditSave" onclick="saveScheduleAdjustment()">保存调整</button>
+    </div>`;
+  document.querySelectorAll('input[name="scheduleEditKind"]').forEach(x => x.onchange = syncScheduleEditFields);
+  $("#scheduleNewPeriod").onchange = syncScheduleCountLimit;
+  syncScheduleCountLimit();
+  syncScheduleEditFields();
+  $("#scheduleEditMask").style.display = "flex";
+}
+async function saveScheduleAdjustment() {
+  const c = SCHEDULE_EDIT_CTX;
+  if (!c || !SCHEDULE.data) return;
+  const kind = document.querySelector('input[name="scheduleEditKind"]:checked')?.value;
+  const originalDate = c.original_occurrence_date || c.occurrence_date || c.display_date;
+  const payload = {
+    action:"create", kind, term:SCHEDULE.data.term, slot_key:c.slot_key,
+    slot_keys:c.slot_keys || [c.slot_key],
+    occurrence_date:originalDate, course_name:c.name, course_id:c.course_id,
+    course_code:c.course_code, teacher:c.teacher, room:c.room, raw_time:c.raw_time,
+    original_weekday:c.original_weekday,
+    original_start_period:c.original_start_period ?? c.display_start_period,
+    original_period_count:c.original_period_count ?? c.display_period_count,
+  };
+  if (kind === "move_once") {
+    payload.new_date = $("#scheduleNewDate").value;
+    payload.new_start_period = Number($("#scheduleNewPeriod").value);
+    payload.new_period_count = Number($("#scheduleNewCount").value);
+    payload.new_room = $("#scheduleNewRoom").value.trim();
+    if (!payload.new_date) { showToast("请选择新的上课日期", "err"); return; }
+  }
+  const btn = $("#scheduleEditSave"); btn.disabled = true; btn.textContent = "保存中…";
+  const r = await api("/api/schedule-adjustment", {method:"POST", body:JSON.stringify(payload)});
+  if (!r.ok) { btn.disabled = false; btn.textContent = "保存调整"; showToast(r.error || "保存失败", "err"); return; }
+  closeScheduleEdit();
+  if (kind === "move_once") SCHEDULE.weekStart = payload.new_date;
+  await loadSchedule(false);
+  showToast("课表调整已保存在本机", "ok");
+}
+async function deleteScheduleAdjustment(id) {
+  const r = await api("/api/schedule-adjustment", {method:"POST", body:JSON.stringify({action:"delete", id})});
+  if (!r.ok) { showToast(r.error || "恢复失败", "err"); return; }
+  closeScheduleEdit();
+  await loadSchedule(false);
+  showToast("已恢复 ETA 官方安排", "ok");
+}
+function adjustmentDescription(a) {
+  if (a.kind === "hide_series") return "本学期隐藏这个固定时段";
+  if (a.kind === "cancel_once") return `${fmtMD(a.occurrence_date)} 本次不上`;
+  return `${fmtMD(a.occurrence_date)} → ${fmtMD(a.new_date)} ${schedulePeriodLabel(a.new_start_period)}起`;
+}
+function openAdjustmentManager() {
+  SCHEDULE_EDIT_CTX = null;
+  $("#scheduleEditTitle").textContent = "本地课表调整";
+  const list = (SCHEDULE.data?.adjustments || []);
+  $("#scheduleEditBody").innerHTML = list.length
+    ? `<div class="hint" style="margin-bottom:6px">删除记录即可恢复 ETA 官方课表。</div>` + list.map(a =>
+        `<div class="adjustment-row"><div><strong>${esc(a.course_name || "课程")}</strong><br><span class="hint">${esc(adjustmentDescription(a))}</span></div><button class="btn" onclick="deleteScheduleAdjustment('${esc(a.id)}')">恢复</button></div>`).join("")
+    : emptyBox("✓", "当前学期没有本地课表调整");
+  $("#scheduleEditMask").style.display = "flex";
+}
+
 async function loadData(force) {
   const t0 = performance.now();
   $("#meta").textContent = "正在加载…";
@@ -1001,6 +1659,7 @@ async function loadData(force) {
 
   renderCourses();
   renderHomeworks();
+  if (COURSE_VIEW === "schedule" && SCHEDULE.data) renderWeekSchedule();
   refreshCountdowns();
 
   $("#meta").textContent =
@@ -1020,7 +1679,7 @@ function renderCourses() {
                (x.teacher || "").toLowerCase().includes(q))) return false;
     return true;
   });
-  $("#courseCount").textContent = `共 ${list.length} 门`;
+  $("#courseCount").textContent = COURSE_VIEW === "schedule" ? "" : `共 ${list.length} 门`;
 
   if (!list.length) {
     $("#courses").innerHTML = emptyBox(q ? "🔍" : "🗂️", q ? "没有符合条件的课程" : "暂时还没有课程");
@@ -1130,6 +1789,9 @@ function renderHomeworks() {
 // ---- 课程详情：章节 + 资源 ----
 const DETAIL_FILES = {};   // uploadId -> 文件名（避免把文件名塞进 HTML 属性）
 const DETAIL_COURSE = {};  // uploadId -> 所属课程名（下载时按课程建子文件夹）
+const DETAIL_COURSE_ID_BY_UPLOAD = {}; // uploadId -> 课程 id（用于保存到绑定目录）
+let LOCAL_COURSE_FILES = {};
+let LOCAL_FOLDER_STATE = null;
 function fileExt(name) {
   const i = (name || "").lastIndexOf(".");
   return i < 0 ? "" : (name.slice(i + 1).toLowerCase());
@@ -1159,10 +1821,116 @@ function fmtSize(n) {
 function fileItemHtml(u) {
   DETAIL_FILES[u.id] = u.name;
   DETAIL_COURSE[u.id] = DETAIL_COURSE_NAME;
+  DETAIL_COURSE_ID_BY_UPLOAD[u.id] = DETAIL_COURSE_ID;
   const size = fmtSize(u.size) ? ` · ${fmtSize(u.size)}` : "";
   return `<div class="file"><span class="fname">${esc(u.name)}<span class="ftype">${fileType(u.name)}${size}</span></span>`
        + `<button class="dl pv" data-name="${esc(u.name)}" onclick="previewFile(${u.id}, this)" title="在线预览（图片/PDF/Word/PPT/Excel/TXT 等）">预览</button>`
        + `<button class="dl" onclick="downloadUpload(${u.id})">下载</button></div>`;
+}
+
+function localFileItemHtml(file, i) {
+  const ref = "lf" + i;
+  LOCAL_COURSE_FILES[ref] = file;
+  const modified = file.modified_at ? String(file.modified_at).slice(0,16).replace("T"," ") : "";
+  return `<div class="file"><span class="fname">${esc(file.name)}<span class="ftype">PDF · ${fmtSize(file.size)}${modified ? ` · ${esc(modified)}` : ""}</span><span class="local-source">本地</span></span>
+    <button class="dl pv" onclick="previewLocalPdf('${ref}')">预览</button>
+    <button class="dl" onclick="openLocalPdf('${ref}')">打开</button></div>`;
+}
+function renderLocalCourseFiles(data) {
+  LOCAL_FOLDER_STATE = data && data.ok ? data : null;
+  LOCAL_COURSE_FILES = {};
+  const meta = $("#localFolderMeta"), box = $("#localFileBox"), reset = $("#localFolderReset");
+  if (!meta || !box) return;
+  if (!data || !data.ok) {
+    meta.textContent = "本地资料加载失败";
+    box.innerHTML = emptyBox("⚠️", esc(data?.error || "无法读取课程文件夹"));
+    return;
+  }
+  meta.textContent = data.folder || "";
+  meta.title = data.folder || "";
+  if (reset) reset.hidden = !data.custom;
+  const files = data.files || [];
+  box.innerHTML = (data.warning ? `<div class="hint" style="margin-bottom:8px;color:#b45309">${esc(data.warning)}</div>` : "") +
+    (files.length ? files.map(localFileItemHtml).join("") : emptyBox("📂", "把 PDF 放入这个文件夹后，点击刷新即可显示"));
+}
+async function refreshLocalCourseFiles() {
+  if (DETAIL_COURSE_ID == null) return;
+  const q = `course_id=${encodeURIComponent(DETAIL_COURSE_ID)}&course_name=${encodeURIComponent(DETAIL_COURSE_NAME)}`;
+  const data = await api("/api/course-folder?" + q);
+  renderLocalCourseFiles(data);
+}
+async function chooseCourseFolder() {
+  let dir = "";
+  if (await ensurePv()) {
+    dir = (await window.pywebview.api.choose_folder()) || "";
+    if (!dir) return;
+  } else {
+    showToast("正在打开文件夹选择窗口…（若没看到，请检查任务栏）");
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 120000);
+      const r = await fetch("/api/pick_dir", {method:"POST", headers:{"X-Zjucourse-Token":window.TOKEN}, signal:ctrl.signal});
+      clearTimeout(timer);
+      const picked = await r.json();
+      if (picked.cancelled) return;
+      if (!picked.ok) { showToast(picked.error || "无法选择文件夹", "err", 8000); return; }
+      dir = picked.dir || "";
+    } catch (e) { showToast("打开选择窗口失败：" + e, "err", 8000); return; }
+  }
+  const data = await api("/api/course-folder", {method:"POST", body:JSON.stringify({
+    action:"set", course_id:DETAIL_COURSE_ID, course_name:DETAIL_COURSE_NAME, dir
+  })});
+  if (!data.ok) { showToast(data.error || "绑定文件夹失败", "err"); return; }
+  await refreshLocalCourseFiles();
+  showToast("课程资料文件夹已绑定", "ok");
+}
+async function resetCourseFolder() {
+  const data = await api("/api/course-folder", {method:"POST", body:JSON.stringify({
+    action:"reset", course_id:DETAIL_COURSE_ID, course_name:DETAIL_COURSE_NAME
+  })});
+  if (!data.ok) { showToast(data.error || "恢复默认目录失败", "err"); return; }
+  await refreshLocalCourseFiles();
+  showToast("已恢复默认课程文件夹", "ok");
+}
+async function openCourseFolder() {
+  const data = await api("/api/course-folder", {method:"POST", body:JSON.stringify({
+    action:"open_folder", course_id:DETAIL_COURSE_ID, course_name:DETAIL_COURSE_NAME
+  })});
+  if (!data.ok) showToast(data.error || "无法打开课程文件夹", "err");
+}
+async function openLocalPdf(ref) {
+  const file = LOCAL_COURSE_FILES[ref];
+  if (!file) return;
+  const data = await api("/api/course-folder", {method:"POST", body:JSON.stringify({
+    action:"open_file", course_id:DETAIL_COURSE_ID, course_name:DETAIL_COURSE_NAME, name:file.name
+  })});
+  if (!data.ok) showToast(data.error || "无法打开 PDF", "err");
+}
+async function previewLocalPdf(ref) {
+  const file = LOCAL_COURSE_FILES[ref];
+  if (!file) return;
+  if (Number(file.size || 0) > 100 * 1048576) {
+    showToast("PDF 超过 100MB，已改用系统阅读器打开", "info");
+    openLocalPdf(ref); return;
+  }
+  $("#pvBody").innerHTML = pvLoadingHtml();
+  $("#pvCap").style.display = "none";
+  $("#pvMask").style.display = "flex";
+  const q = `course_id=${encodeURIComponent(DETAIL_COURSE_ID)}&course_name=${encodeURIComponent(DETAIL_COURSE_NAME)}&name=${encodeURIComponent(file.name)}`;
+  try {
+    const r = await fetch("/api/local-file?" + q, {headers:{"X-Zjucourse-Token":window.TOKEN}});
+    if (!r.ok) { let m="读取 PDF 失败"; try{m=(await r.json()).error||m;}catch(e){} throw new Error(m); }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob); PREVIEW_BLOB_URLS.push(url);
+    const frame = document.createElement("iframe"); frame.src = url; frame.title = file.name;
+    $("#pvBody").innerHTML = ""; $("#pvBody").appendChild(frame);
+    $("#pvName").textContent = file.name;
+    $("#pvDl").textContent = "系统打开";
+    $("#pvDl").onclick = () => openLocalPdf(ref);
+    $("#pvCap").style.display = "flex";
+  } catch (e) {
+    pvCloseNow(); showToast(String(e), "err", 7000);
+  }
 }
 
 // 内嵌预览：让后端带登录会话把浙大预览服务转好的内容拉下来 → blob URL →
@@ -1179,6 +1947,7 @@ function pvLoadingHtml() {
 function pvCleanup() {
   while (PREVIEW_BLOB_URLS.length) URL.revokeObjectURL(PREVIEW_BLOB_URLS.pop());
   const b = $("#pvBody"); if (b) b.innerHTML = pvLoadingHtml();
+  $("#pvDl").textContent = "下载";
   $("#pvCap").style.display = "none";
 }
 function pvCloseNow() { $("#pvMask").style.display = "none"; pvCleanup(); }
@@ -1278,7 +2047,8 @@ $("#pvClose").onclick = pvCloseNow;
 // 不再点遮罩关闭：弹窗只通过右上角 × 关闭，避免误点黑色区域丢失浏览进度
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape") return;
-  if ($("#settingsMask").style.display !== "none") closeSettings();
+  if ($("#scheduleEditMask").style.display !== "none") closeScheduleEdit();
+  else if ($("#settingsMask").style.display !== "none") closeSettings();
   else if ($("#pvMask").style.display !== "none") pvCloseNow();
   else if ($("#gradeModal").style.display !== "none") closeMask($("#gradeModal"));
   else if ($("#detail").style.display !== "none") closeDetailModal();
@@ -1293,14 +2063,17 @@ async function openDetail(courseId, courseName) {
   $("#detailBody").innerHTML = `<div class="empty">加载中…</div>`;
   showDetailModal();
 
-  const [cwRes, hwRes, lvRes] = await Promise.all([
+  const folderQuery = `course_id=${encodeURIComponent(courseId)}&course_name=${encodeURIComponent(DETAIL_COURSE_NAME)}`;
+  const [cwRes, hwRes, lvRes, localRes] = await Promise.all([
     api("/api/courseware?course_id=" + encodeURIComponent(courseId)),
     api("/api/course-homework?course_id=" + encodeURIComponent(courseId)),
     api("/api/course-lives?course_id=" + encodeURIComponent(courseId)),
+    api("/api/course-folder?" + folderQuery),
   ]);
 
   for (const k in DETAIL_FILES) delete DETAIL_FILES[k];
   for (const k in DETAIL_COURSE) delete DETAIL_COURSE[k];
+  for (const k in DETAIL_COURSE_ID_BY_UPLOAD) delete DETAIL_COURSE_ID_BY_UPLOAD[k];
 
   // ---- 章节与资源：优先用后端已按浙大网页版规则分好的 chapters ----
   // 后端从课件标题/文件名推断章号并把活动顺序归到对应章（复刻网页版结构）。
@@ -1407,6 +2180,18 @@ async function openDetail(courseId, courseName) {
           </h3>
           <div id="hwBox"></div>
         </div>
+        <div class="detail-sec" id="sec-local">
+          <h3 class="sec-title">📁 本地资料
+            <span class="toggle" onclick="refreshLocalCourseFiles()">刷新</span>
+          </h3>
+          <div class="local-folder-bar">
+            <div class="local-folder-path" id="localFolderMeta">正在读取课程文件夹…</div>
+            <button class="btn" onclick="openCourseFolder()">打开文件夹</button>
+            <button class="btn" onclick="chooseCourseFolder()">选择文件夹</button>
+            <button class="btn" id="localFolderReset" onclick="resetCourseFolder()" hidden>恢复默认</button>
+          </div>
+          <div id="localFileBox"><div class="empty">正在扫描 PDF…</div></div>
+        </div>
         <div class="detail-sec" id="sec-ch">
           <h3 class="sec-title">📚 章节与资源</h3>
           <div id="chBox">${chHtml}</div>
@@ -1423,14 +2208,16 @@ async function openDetail(courseId, courseName) {
     </div>`;
 
   renderHomeworkBox();
+  renderLocalCourseFiles(localRes);
 
-  buildToc(chapters, !!livesHtml);
+  buildToc(chapters, !!livesHtml, true);
 
   const hwN = (hwRes.ok ? DETAIL_HW.length : 0);
   const chN = chapters.length;
   const lvN = livesHtml ? lives.length : 0;
+  const localN = localRes.ok ? (localRes.files || []).length : 0;
   $("#detailMeta").textContent =
-    `共 ${hwN} 项作业 · ${chN} 个章节` + (lvN ? ` · ${lvN} 节录播` : "");
+    `共 ${hwN} 项作业 · ${chN} 个章节 · ${localN} 个本地 PDF` + (lvN ? ` · ${lvN} 节录播` : "");
 }
 
 // ---- 课堂录播（智云课堂）----
@@ -1654,11 +2441,14 @@ function syncTocFor(targetId, open) {
 
 // ---- 详情页左侧大纲目录 ----
 let _tocObserver = null;
-function buildToc(items, hasLives) {
+function buildToc(items, hasLives, hasLocal) {
   const toc = document.getElementById("toc");
   if (!toc) return;
   let html = '<div class="toc-h">目录</div>';
   html += '<button class="toc-item" data-target="sec-hw"><span class="tdot">●</span>作业</button>';
+  if (hasLocal) {
+    html += '<button class="toc-item" data-target="sec-local"><span class="tdot">●</span>本地资料</button>';
+  }
   if (hasLives) {
     html += '<button class="toc-item" data-target="sec-live"><span class="tdot">●</span>课堂录播</button>';
   }
@@ -1749,6 +2539,8 @@ function setupTocObserver(items) {
   _tocObserver = new IntersectionObserver(cb, opt);
   const hw = document.getElementById("sec-hw");
   if (hw) _tocObserver.observe(hw);
+  const local = document.getElementById("sec-local");
+  if (local) _tocObserver.observe(local);
   (items || []).forEach((c, i) => {
     const h = document.getElementById("head" + i);
     if (h) _tocObserver.observe(h);
@@ -1785,18 +2577,24 @@ async function downloadUpload(uploadId) {
   const name = DETAIL_FILES[uploadId] || "";
   const label = name || ("file_" + uploadId);
   const course = DETAIL_COURSE[uploadId] || "";
+  const courseId = DETAIL_COURSE_ID_BY_UPLOAD[uploadId] ?? "";
   // 统一走「后端直接写盘」通道：本地服务与浏览器同机，这样
   // 设置里的下载文件夹（含课程子文件夹）在浏览器模式下同样生效。
   // （浏览器原生「另存为」只认浏览器自己的下载位置，无视我们的设置。）
   showToast("开始下载：" + label);
   try {
     const r = await fetch("/api/save_download/" + uploadId + "?name=" + encodeURIComponent(name)
-                          + "&course=" + encodeURIComponent(course), {
+                          + "&course=" + encodeURIComponent(course)
+                          + "&course_id=" + encodeURIComponent(courseId), {
       method: "POST",
       headers: { "X-Zjucourse-Token": window.TOKEN }
     });
     const d = await r.json();
-    if (d.ok) showToast("下载完成，已保存到：" + d.path, "ok", 7000);
+    if (d.ok) {
+      showToast("下载完成，已保存到：" + d.path, "ok", 7000);
+      if (fileExt(name) === "pdf" && String(DETAIL_COURSE_ID) === String(courseId) &&
+          $("#detail").style.display !== "none") refreshLocalCourseFiles();
+    }
     else showToast(d.error || "下载失败", "err", 6000);
   } catch (e) {
     showToast("下载出错：" + e, "err", 6000);
@@ -2025,7 +2823,12 @@ function showDashboard() {
 
 async function boot() {
   const st = await api("/api/status");
-  if (st.ok && st.logged_in) showDashboard();
+  if (st.ok && st.logged_in) {
+    showDashboard();
+    if (new URLSearchParams(location.search).get("view") === "schedule") {
+      switchCourseView("schedule");
+    }
+  }
 }
 boot();
 
@@ -2176,13 +2979,25 @@ $("#remindSeg").addEventListener("click", e => {
 });
 syncRemindUI();
 
-$("#refreshBtn").onclick = () => loadData(true);
+$("#refreshBtn").onclick = () => {
+  loadData(true);
+  if (COURSE_VIEW === "schedule") loadSchedule(true);
+};
+document.querySelectorAll(".view-tab").forEach(b => b.onclick = () => switchCourseView(b.dataset.view));
+$("#weekPrev").onclick = () => { SCHEDULE.weekStart = addDaysISO(SCHEDULE.weekStart || currentMondayISO(), -7); loadSchedule(false); };
+$("#weekNext").onclick = () => { SCHEDULE.weekStart = addDaysISO(SCHEDULE.weekStart || currentMondayISO(), 7); loadSchedule(false); };
+$("#weekToday").onclick = () => { SCHEDULE.weekStart = currentMondayISO(); loadSchedule(false); };
+$("#scheduleAdjustments").onclick = openAdjustmentManager;
+$("#scheduleEditClose").onclick = closeScheduleEdit;
+$("#weekRefresh").onclick = () => loadSchedule(true);
 $("#semesterSel").onchange = () => { renderCourses(); renderHomeworks(); };
 $("#hwFilter").onchange = renderHomeworks;
 $("#courseSearch").oninput = renderCourses;
 $("#logoutBtn").onclick = async () => {
   await api("/api/logout", { method: "POST" });
   DATA = { courses: [], homeworks: [], activeIds: new Set() };
+  SCHEDULE = { weekStart: "", data: null, loading: false, request: 0 };
+  switchCourseView("list");
   $("#app").style.display = "none";
   $("#login").style.display = "flex";
 };

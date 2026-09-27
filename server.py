@@ -67,6 +67,8 @@ SESSION_FILE = os.path.join(DATA_DIR, 'session.dat')
 
 # 下载文件夹配置（用户在设置里可改；存 DATA_DIR，随用户走）
 DL_DIR_FILE = os.path.join(DATA_DIR, 'download_dir.json')
+COURSE_FOLDERS_FILE = os.path.join(DATA_DIR, 'course_folders.json')
+_COURSE_FOLDERS_LOCK = threading.Lock()
 
 
 def _default_download_dir():
@@ -99,6 +101,86 @@ def set_download_dir(d):
     except Exception:
         return False
 
+
+def _safe_course_dir_name(name):
+    value = re.sub(r'[\\/:*?"<>|]', '_', str(name or '').strip()).strip('. ')
+    return value or '未命名课程'
+
+
+def _load_course_folders():
+    try:
+        with open(COURSE_FOLDERS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_course_folders(items):
+    tmp = COURSE_FOLDERS_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, COURSE_FOLDERS_FILE)
+
+
+def _course_folder_match(item, course_id=None, course_name=''):
+    if item.get('owner') != CURRENT_STUID:
+        return False
+    if course_id not in (None, '') and item.get('course_id') not in (None, ''):
+        return str(item.get('course_id')) == str(course_id)
+    return (bool(_course_name_key(course_name)) and
+            item.get('course_key') == _course_name_key(course_name))
+
+
+def get_course_folder(course_id=None, course_name='', create=False):
+    """返回课程资料目录及是否为用户自定义目录。"""
+    with _COURSE_FOLDERS_LOCK:
+        item = next((x for x in _load_course_folders()
+                     if _course_folder_match(x, course_id, course_name)), None)
+    if item:
+        return str(item.get('path') or ''), True
+    folder = os.path.join(get_download_dir(), _safe_course_dir_name(course_name))
+    if create:
+        os.makedirs(folder, exist_ok=True)
+    return folder, False
+
+
+def set_course_folder(course_id, course_name, folder):
+    folder = os.path.realpath(str(folder or '').strip())
+    if not folder or not os.path.isdir(folder):
+        return False
+    with _COURSE_FOLDERS_LOCK:
+        items = _load_course_folders()
+        items = [x for x in items if not _course_folder_match(x, course_id, course_name)]
+        try:
+            cid = int(course_id) if course_id not in (None, '') else None
+        except Exception:
+            cid = None
+        items.append({
+            'owner': CURRENT_STUID, 'course_id': cid,
+            'course_name': str(course_name or '')[:200],
+            'course_key': _course_name_key(course_name), 'path': folder,
+            'updated_at': datetime.datetime.now().astimezone().isoformat(timespec='seconds'),
+        })
+        try:
+            _save_course_folders(items)
+            return True
+        except Exception:
+            return False
+
+
+def reset_course_folder(course_id, course_name):
+    with _COURSE_FOLDERS_LOCK:
+        items = _load_course_folders()
+        kept = [x for x in items if not _course_folder_match(x, course_id, course_name)]
+        if len(kept) == len(items):
+            return True
+        try:
+            _save_course_folders(kept)
+            return True
+        except Exception:
+            return False
+
 # 当前登录的学号。只用于拼 ETA 成绩查询地址（xh 参数），不存密码；
 # 会随会话一起用 DPAPI 加密落盘，重启后仍可用。
 CURRENT_STUID = ''
@@ -120,7 +202,7 @@ PUBKEY_URL = 'https://zjuam.zju.edu.cn/cas/v2/getPubKey'
 LOGIN_URL = 'https://zjuam.zju.edu.cn/cas/login'
 SEMESTERS_URL = 'https://courses.zju.edu.cn/api/my-semesters'
 # eta：登录成功后顺带把它的 Cookie 也种上（后台执行，成绩查询要用）
-ETA_URL = 'http://eta.zju.edu.cn/index/student'
+ETA_URL = 'https://eta.zju.edu.cn/index/student'
 
 UA = 'Mozilla/5.0 (X11; Linux x86_64; rv:88.0) Gecko/20100101 Firefox/88.0'
 
@@ -1320,19 +1402,24 @@ def stream_upload(upload_id):
     return _DATA_OPENER.open(req, timeout=120)
 
 
-def api_save_download(upload_id, name, course=''):
+def api_save_download(upload_id, name, course='', course_id=None):
     """
     把学在浙大文件**直接写到本地下载文件夹**（桌面版专用）。
 
     桌面外壳（pywebview/WebView2）不支持网页触发的「另存为」，所以由后端
     一边流式拉取一边落盘。同名文件自动加 (1)、(2) 后缀，绝不覆盖。
-    course 非空时落到「下载文件夹/课程名/」子文件夹（借鉴 fiz 的整理方式）。
+    course 非空时优先落到该课程绑定的本地资料文件夹。
     """
-    folder = get_download_dir()
-    sub = re.sub(r'[\\/:*?"<>|]', '_', (course or '').strip()).strip('. ')
-    if sub:
-        folder = os.path.join(folder, sub)
+    if str(course or '').strip():
+        folder, custom = get_course_folder(course_id, course, create=True)
+    else:
+        folder, custom = get_download_dir(), False
+    if custom and not os.path.isdir(folder):
+        return {'ok': False, 'error': '该课程绑定的资料文件夹已不存在，请重新选择'}
+    try:
         os.makedirs(folder, exist_ok=True)
+    except Exception as e:
+        return {'ok': False, 'error': '无法创建课程资料文件夹：' + str(e)}
     fname = os.path.basename(name or '').strip() or ('file_%s' % upload_id)
     fname = re.sub(r'[\\/:*?"<>|]', '_', fname)   # Windows 非法字符
     stem, ext = os.path.splitext(fname)
@@ -1356,6 +1443,98 @@ def api_save_download(upload_id, name, course=''):
             pass
         return {'ok': False, 'error': '下载失败：' + str(e)}
     return {'ok': True, 'path': target}
+
+
+def api_course_folder(course_id=None, course_name=''):
+    if not CURRENT_STUID:
+        return {'ok': False, 'error': '尚未登录'}
+    folder, custom = get_course_folder(course_id, course_name, create=True)
+    exists = os.path.isdir(folder)
+    files = []
+    warning = ''
+    if exists:
+        try:
+            for entry in os.scandir(folder):
+                if len(files) >= 500:
+                    warning = '文件较多，仅显示前 500 个 PDF'
+                    break
+                if (not entry.is_file(follow_symlinks=False) or
+                        os.path.splitext(entry.name)[1].lower() != '.pdf'):
+                    continue
+                stat = entry.stat(follow_symlinks=False)
+                files.append({
+                    'name': entry.name, 'size': stat.st_size,
+                    'modified_at': datetime.datetime.fromtimestamp(
+                        stat.st_mtime).astimezone().isoformat(timespec='seconds'),
+                })
+        except Exception as e:
+            warning = '扫描文件夹失败：' + str(e)
+    elif custom:
+        warning = '绑定的文件夹已不存在，请重新选择'
+    files.sort(key=lambda x: (x.get('modified_at') or '', x['name']), reverse=True)
+    return {'ok': True, 'course_id': course_id, 'course_name': course_name,
+            'folder': folder, 'custom': custom, 'exists': exists,
+            'files': files, 'warning': warning}
+
+
+def _resolve_course_local_pdf(course_id, course_name, filename):
+    if not filename or os.path.basename(filename) != filename:
+        raise ValueError('文件名无效')
+    if os.path.splitext(filename)[1].lower() != '.pdf':
+        raise ValueError('只允许访问课程目录中的 PDF')
+    folder, _ = get_course_folder(course_id, course_name, create=False)
+    if not folder or not os.path.isdir(folder):
+        raise FileNotFoundError('课程资料文件夹不存在')
+    root = os.path.normcase(os.path.realpath(folder))
+    path = os.path.normcase(os.path.realpath(os.path.join(folder, filename)))
+    try:
+        inside = os.path.commonpath([root, path]) == root
+    except ValueError:
+        inside = False
+    if not inside or not os.path.isfile(path):
+        raise FileNotFoundError('PDF 不存在')
+    return path
+
+
+def api_course_folder_action(payload):
+    action = str(payload.get('action') or '')
+    course_id = payload.get('course_id')
+    course_name = str(payload.get('course_name') or '').strip()
+    if not CURRENT_STUID:
+        return {'ok': False, 'error': '尚未登录'}
+    if not course_name:
+        return {'ok': False, 'error': '课程名不能为空'}
+    if action == 'set':
+        ok = set_course_folder(course_id, course_name, payload.get('dir'))
+        return {'ok': ok, 'error': None if ok else '文件夹不存在或保存失败'}
+    if action == 'reset':
+        ok = reset_course_folder(course_id, course_name)
+        return {'ok': ok, 'error': None if ok else '恢复默认文件夹失败'}
+    if action == 'open_folder':
+        folder, custom = get_course_folder(course_id, course_name, create=True)
+        if custom and not os.path.isdir(folder):
+            return {'ok': False, 'error': '绑定的文件夹已不存在，请重新选择'}
+        try:
+            os.makedirs(folder, exist_ok=True)
+            if os.name == 'nt':
+                subprocess.Popen(['explorer', folder])
+            else:
+                subprocess.Popen(['xdg-open', folder])
+            return {'ok': True}
+        except Exception as e:
+            return {'ok': False, 'error': '无法打开文件夹：' + str(e)}
+    if action == 'open_file':
+        try:
+            path = _resolve_course_local_pdf(course_id, course_name,
+                                             str(payload.get('name') or ''))
+            if os.name == 'nt':
+                os.startfile(path)
+            else:
+                subprocess.Popen(['xdg-open', path])
+            return {'ok': True}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+    return {'ok': False, 'error': '未知操作'}
 
 
 def api_open_download_dir():
@@ -1488,10 +1667,12 @@ def export_live_ppt(sub_id, page_view_url, course='', fallback_name=''):
         path_name = (info.get('path_name') or '').strip()
         if not path_name:
             return {'ok': False, 'error': '智云课堂未返回下载地址'}
-        folder = get_download_dir()
-        sub = re.sub(r'[\\/:*?"<>|]', '_', (course or '').strip()).strip('. ')
-        if sub:
-            folder = os.path.join(folder, sub)
+        if str(course or '').strip():
+            folder, custom = get_course_folder(None, course, create=True)
+            if custom and not os.path.isdir(folder):
+                return {'ok': False, 'error': '该课程绑定的资料文件夹已不存在，请重新选择'}
+        else:
+            folder = get_download_dir()
         os.makedirs(folder, exist_ok=True)
         fname = file_name or (fallback_name or ('智云课件_%s.pptx' % sub_id))
         fname = re.sub(r'[\\/:*?"<>|]', '_', os.path.basename(fname)).strip()
@@ -1615,7 +1796,7 @@ def pick_folder_native():
     try:
         # 标题写明用途（IFileDialog 虚表：17=SetTitle）
         _call(_slot(pdlg, 17, ctypes.c_wchar_p),
-              pdlg, '选择 ZJU-Course 的下载文件夹')
+              pdlg, '选择 ZJU-Course 文件夹')
         hr = _slot(pdlg, 9, c_uint)(pdlg, FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)
         if hr != 0:
             return {'ok': False, 'error': '初始化选择窗口失败 (0x%08X)' % (hr & 0xFFFFFFFF)}
@@ -1875,6 +2056,33 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _stream_local_pdf(self):
+        """只流式提供用户为当前课程绑定目录中的顶层 PDF。"""
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        try:
+            path = _resolve_course_local_pdf(
+                qs.get('course_id', [''])[0], qs.get('course_name', [''])[0],
+                qs.get('name', [''])[0])
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/pdf')
+            self.send_header('Content-Length', str(os.path.getsize(path)))
+            self.send_header('Content-Disposition', "inline; filename*=UTF-8''" +
+                             urllib.parse.quote(os.path.basename(path)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            with open(path, 'rb') as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except ValueError as e:
+            self._json({'ok': False, 'error': str(e)}, 400)
+        except FileNotFoundError as e:
+            self._json({'ok': False, 'error': str(e)}, 404)
+        except Exception as e:
+            self._json({'ok': False, 'error': '读取 PDF 失败：' + str(e)}, 500)
+
     def _serve_static(self, path):
         """仅服务 libs/ 下的前端库文件（公开，不含用户数据）。防目录穿越。"""
         fname = path[len('/libs/'):]
@@ -2016,6 +2224,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/download_dir':
             self._json({'ok': True, 'dir': get_download_dir()})
             return
+        if path == '/api/course-folder':
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            self._json(api_course_folder(qs.get('course_id', [''])[0],
+                                         qs.get('course_name', [''])[0]))
+            return
+        if path == '/api/local-file':
+            self._stream_local_pdf()
+            return
         if path.startswith('/api/preview_url/'):
             uid = path[len('/api/preview_url/'):].split('?')[0]
             self._api_preview_url(uid)
@@ -2027,6 +2243,20 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/grades':
             qs = urllib.parse.parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
             self._json(api_grades(force='force' in qs))
+            return
+        if path == '/api/timetable':
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            self._json(api_timetable(
+                qs.get('start', [''])[0], qs.get('term', [''])[0],
+                force='force' in qs))
+            return
+        if path == '/api/course-todos':
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            cid = qs.get('course_id', [''])[0]
+            if not cid:
+                self._json({'ok': False, 'error': '缺少 course_id'}, 400)
+                return
+            self._json(api_course_todos(cid, qs.get('course_name', [''])[0]))
             return
 
         self._json({'ok': False, 'error': 'not found'}, 404)
@@ -2053,6 +2283,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/submit':
             self._json(api_submit(payload))
             return
+        if path == '/api/manual-task':
+            self._json(api_manual_task(payload))
+            return
+        if path == '/api/schedule-adjustment':
+            self._json(api_schedule_adjustment(payload))
+            return
+        if path == '/api/course-folder':
+            self._json(api_course_folder_action(payload))
+            return
         if path == '/api/download_dir':
             ok = set_download_dir(payload.get('dir'))
             self._json({'ok': ok, 'dir': get_download_dir(),
@@ -2065,7 +2304,8 @@ class Handler(BaseHTTPRequestHandler):
             uid = path[len('/api/save_download/'):].split('?')[0]
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             self._json(api_save_download(uid, qs.get('name', [''])[0],
-                                         qs.get('course', [''])[0]))
+                                         qs.get('course', [''])[0],
+                                         qs.get('course_id', [''])[0]))
             return
         if path == '/api/open_download_dir':
             self._json(api_open_download_dir())
@@ -2096,8 +2336,13 @@ class Handler(BaseHTTPRequestHandler):
 #   · 排除：弃修(BZ) / 未出分(CJ 为空) / 二级制合格·不合格(只计学分不计绩点) /
 #     英语水平测试（按二级制处理：只计学分不计绩点）/
 #     二三四课堂（按课程名识别，学分绩点都不计）。
-ETA_HOME_URL = 'http://eta.zju.edu.cn/index/student'
-ETA_GRADE_LIST_URL = 'http://eta.zju.edu.cn/zftal-xgxt-web/api/teacher/xshx/getKccjList.zf'
+ETA_HOME_URL = 'https://eta.zju.edu.cn/index/student'
+ETA_API_BASE = 'https://eta.zju.edu.cn/zftal-xgxt-web'
+ETA_GRADE_LIST_URL = ETA_API_BASE + '/api/teacher/xshx/getKccjList.zf'
+ETA_CURRENT_TERM_URL = ETA_API_BASE + '/student/xtgl/index/getCurrXn.zf'
+ETA_TERM_LIST_URL = ETA_API_BASE + '/student/xtgl/index/getXnList.zf'
+ETA_TIMETABLE_URL = ETA_API_BASE + '/student/xtgl/index/getTableKcb.zf'
+ETA_DATE_INFO_URL = ETA_API_BASE + '/api/teacher/xshx/getRqxx.zf'
 GRADE_CACHE_KEY = 'grades_eta_v2'
 
 # 等级制成绩 → 百分制换算（百分制 GPA 与挂科判定都要用）
@@ -2313,6 +2558,750 @@ def api_grades(force=False):
         return {'ok': True, 'grades': data['grades'],
                 'analysis': data['analysis'], 'total': data.get('total'),
                 'source': data.get('source')}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+
+# ------------------------------------------------------------ ETA 课表 / 校历 ----
+# 2026-2027 学年校历中的四个短学期。教学周在每个短学期重新从 1 开始；
+# 课程记录里的“秋冬/春夏”表示跨两个短学期都上课。
+ACADEMIC_SEGMENTS = (
+    {'name': '秋', 'label': '秋学期', 'start': '2026-09-14', 'end': '2026-11-08'},
+    {'name': '冬', 'label': '冬学期', 'start': '2026-11-09', 'end': '2027-01-03'},
+    {'name': '春', 'label': '春学期', 'start': '2027-02-22', 'end': '2027-04-18'},
+    {'name': '夏', 'label': '夏学期', 'start': '2027-04-19', 'end': '2027-06-13'},
+)
+
+# 调课必须引用“原课程日期”，不能只写“按星期几上课”：单双周应按被搬移的
+# 那一天判断。例如 9 月 20 日执行的是 10 月 6 日（秋学期第 4 周周二）的课。
+ACADEMIC_DATE_OVERRIDES = {
+    '2026-09-20': {'source_date': '2026-10-06', 'label': '与 10 月 6 日课程对调'},
+    '2026-10-10': {'source_date': '2026-10-07', 'label': '与 10 月 7 日课程对调'},
+    '2026-10-17': {'source_date': '2026-10-02', 'label': '补 10 月 2 日的课'},
+    '2027-01-04': {'source_date': '2026-12-31', 'label': '补 12 月 31 日的课'},
+}
+
+ACADEMIC_HOLIDAYS = {
+    '2026-10-01': '国庆节放假', '2026-10-02': '国庆节放假',
+    '2026-10-03': '国庆节放假', '2026-10-04': '国庆节放假',
+    '2026-10-05': '国庆节放假', '2026-10-06': '国庆节放假（课程已调至 9 月 20 日）',
+    '2026-10-07': '国庆节放假（课程已调至 10 月 10 日）',
+    '2026-12-31': '浙江大学学生节（课程调至 2027 年 1 月 4 日）',
+    '2027-01-01': '元旦放假（后续调休以学校通知为准）',
+    '2027-04-05': '清明节放假（后续调休以学校通知为准）',
+    '2027-05-01': '劳动节放假（后续调休以学校通知为准）',
+    '2027-05-02': '劳动节放假（后续调休以学校通知为准）',
+    '2027-06-09': '端午节放假（后续调休以学校通知为准）',
+}
+
+
+def _eta_get_json(url, timeout=35):
+    """请求 ETA JSON；CAS 会话未换好时触发一次 SSO 跳转后重试。"""
+    last = None
+    for attempt in range(2):
+        r = SESSION.request('GET', url, timeout=timeout)
+        last = r
+        final = (r.url or '').lower()
+        data = _json_of_eta(r.body)
+        if isinstance(data, dict):
+            return data
+        if 'cas/login' in final or attempt == 0:
+            try:
+                SESSION.request('GET', ETA_HOME_URL, timeout=25)
+            except Exception:
+                pass
+            continue
+    final = (last.url if last else '') or ''
+    if 'cas/login' in final.lower():
+        raise RuntimeError('ETA 登录会话尚未建立，请退出后重新登录')
+    raise RuntimeError('ETA 返回了非 JSON 数据，可能登录已过期')
+
+
+def _eta_data(url, timeout=35):
+    obj = _eta_get_json(url, timeout=timeout)
+    if obj.get('code') not in (None, 0, '0'):
+        raise RuntimeError(str(obj.get('msg') or obj.get('message') or 'ETA 请求失败'))
+    data = obj.get('data')
+    return data if isinstance(data, dict) else (data if data is not None else {})
+
+
+def _course_name_key(name):
+    """跨“学在浙大”和 ETA 匹配课程名；只去排版差异，不做模糊猜测。"""
+    return re.sub(r'[\s\u3000·•—_()（）\[\]【】]+', '', str(name or '')).lower()
+
+
+def _segment_for_date(day):
+    for item in ACADEMIC_SEGMENTS:
+        start = datetime.date.fromisoformat(item['start'])
+        end = datetime.date.fromisoformat(item['end'])
+        if start <= day <= end:
+            out = dict(item)
+            out['week'] = (day - start).days // 7 + 1
+            return out
+    return None
+
+
+def _parse_week_rule(text, dsz=''):
+    """把“秋冬{第1-8周}2节/周”和 single/double 归一成可判定规则。"""
+    text = str(text or '')
+    before = text.split('{', 1)[0]
+    seasons = [x for x in '秋冬春夏' if x in before]
+    weeks = set()
+    inner_m = re.search(r'\{([^}]*)\}', text)
+    # ETA 常见格式把教学周放在花括号中，例如“秋冬{第1-8周}2节/周”。
+    # 没有花括号时只截取“第…周”，避免把“2节/周”误当成第 2 周。
+    if inner_m:
+        scope = inner_m.group(1)
+    else:
+        week_m = re.search(r'第\s*([\d\s,，、~—–至-]+)\s*周', text)
+        scope = week_m.group(1) if week_m else ''
+    for a, b in re.findall(r'(\d+)\s*[-~—–至]\s*(\d+)', scope):
+        lo, hi = sorted((int(a), int(b)))
+        weeks.update(range(lo, hi + 1))
+    if not weeks:
+        weeks.update(int(x) for x in re.findall(r'\d+', scope))
+    parity = 'all'
+    marker = (str(dsz or '') + ' ' + text).lower()
+    if 'single' in marker or '单周' in marker:
+        parity = 'odd'
+    elif 'double' in marker or '双周' in marker:
+        parity = 'even'
+    return {'seasons': seasons, 'weeks': sorted(weeks), 'parity': parity}
+
+
+def _rule_active(rule, segment):
+    if not segment:
+        return False
+    if rule['seasons'] and segment['name'] not in rule['seasons']:
+        return False
+    week = segment['week']
+    if rule['weeks'] and week not in rule['weeks']:
+        return False
+    if rule['parity'] == 'odd' and week % 2 == 0:
+        return False
+    if rule['parity'] == 'even' and week % 2 == 1:
+        return False
+    return True
+
+
+def _course_id_map():
+    out = {}
+    for c in get_courses():
+        key = _course_name_key(c.get('name'))
+        if not key:
+            continue
+        old = out.get(key)
+        if old is None or (c.get('is_active') and not old.get('is_active')):
+            out[key] = c
+    return out
+
+
+def _schedule_slot_key(course, weekday, start_period):
+    """稳定标识 ETA 中的一条固定上课安排，不把具体日期放进 key。"""
+    identity = str(course.get('course_code') or _course_name_key(course.get('name')))
+    raw_time = re.sub(r'\s+', '', str(course.get('raw_time') or ''))
+    return '%s|%s|%s|%s' % (identity, int(weekday), int(start_period), raw_time)
+
+
+def _course_block_identity(course):
+    """相邻块是否属于同一门课；教师/教室不同时保留为两个框。"""
+    identity = course.get('course_id')
+    if identity is None:
+        identity = course.get('course_code') or _course_name_key(course.get('name'))
+    teacher = re.sub(r'\s+', '', str(course.get('teacher') or '')).lower()
+    room = re.sub(r'\s+', '', str(course.get('room') or '')).lower()
+    return str(identity), teacher, room
+
+
+def _merge_adjacent_course_blocks(blocks):
+    """ETA 偶尔把一段连续课程拆成 1 节 + 2 节；显示时合成完整课段。"""
+    merged = []
+    for block in sorted(blocks, key=lambda x: int(x.get('start_period') or 0)):
+        current = dict(block)
+        current['courses'] = [dict(c) for c in block.get('courses') or []]
+        if merged and len(merged[-1].get('courses') or []) == 1 and len(current['courses']) == 1:
+            previous = merged[-1]
+            a, b = previous['courses'][0], current['courses'][0]
+            prev_start = int(previous.get('start_period') or 0)
+            prev_end = prev_start + int(previous.get('period_count') or 1)
+            cur_start = int(current.get('start_period') or 0)
+            aid, ateacher, aroom = _course_block_identity(a)
+            bid, bteacher, broom = _course_block_identity(b)
+            same_course = (aid == bid and
+                           (not ateacher or not bteacher or ateacher == bteacher) and
+                           (not aroom or not broom or aroom == broom))
+            if cur_start <= prev_end and same_course:
+                new_end = max(prev_end, cur_start + int(current.get('period_count') or 1))
+                previous['period_count'] = new_end - prev_start
+                keys = list(a.get('slot_keys') or [a.get('slot_key')])
+                keys.extend(b.get('slot_keys') or [b.get('slot_key')])
+                a['slot_keys'] = list(dict.fromkeys(x for x in keys if x))
+                for field in ('teacher', 'room', 'course_code', 'course_id'):
+                    if not a.get(field) and b.get(field):
+                        a[field] = b[field]
+                a['original_start_period'] = prev_start
+                a['original_period_count'] = previous['period_count']
+                continue
+        if len(current['courses']) == 1:
+            c = current['courses'][0]
+            c['slot_keys'] = list(c.get('slot_keys') or [c.get('slot_key')])
+        merged.append(current)
+    return merged
+
+
+def _normalise_eta_timetable(kb_list):
+    """保留 ETA 的时间块结构；块内 ke 数组用于表达同一时段的多门/冲突课程。"""
+    course_map = _course_id_map()
+    by_weekday = {i: [] for i in range(1, 8)}
+    if not isinstance(kb_list, dict):
+        return by_weekday
+    for weekday in range(1, 8):
+        blocks = kb_list.get(str(weekday), kb_list.get(weekday, [])) or []
+        if not isinstance(blocks, list):
+            continue
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            try:
+                start_period = max(0, min(13, int(block.get('ksj') or 0)))
+                period_count = max(1, min(14, int(block.get('ks') or 1)))
+            except Exception:
+                start_period, period_count = 1, 1
+            courses = []
+            for raw in block.get('ke') or []:
+                if not isinstance(raw, dict):
+                    continue
+                name = str(raw.get('kcmc') or '').strip()
+                if not name:
+                    continue
+                matched = course_map.get(_course_name_key(name)) or {}
+                raw_time = str(raw.get('sksj') or '').strip()
+                courses.append({
+                    'name': name,
+                    'teacher': str(raw.get('rkjs') or '').strip(),
+                    'room': str(raw.get('jsmc') or '').strip(),
+                    'course_code': str(raw.get('kcdm') or '').strip(),
+                    'course_id': matched.get('id'),
+                    'raw_time': raw_time,
+                    'exam_time': str(raw.get('kssj') or '').strip(),
+                    'rule': _parse_week_rule(raw_time, block.get('dsz')),
+                })
+                courses[-1]['slot_key'] = _schedule_slot_key(
+                    courses[-1], weekday, start_period)
+            if courses:
+                by_weekday[weekday].append({
+                    'start_period': start_period,
+                    'period_count': period_count,
+                    'courses': courses,
+                })
+    return by_weekday
+
+
+def _term_options(raw):
+    items = raw if isinstance(raw, list) else []
+    out = []
+    for item in items:
+        if isinstance(item, str):
+            out.append({'value': item, 'label': item})
+            continue
+        if not isinstance(item, dict):
+            continue
+        value = (item.get('xnxq') or item.get('value') or item.get('dm') or
+                 item.get('id') or item.get('code'))
+        label = (item.get('xnxqmc') or item.get('label') or item.get('mc') or
+                 item.get('name') or value)
+        if value is not None:
+            out.append({'value': str(value), 'label': str(label)})
+    return out
+
+
+def _fetch_eta_timetable_bundle(term='', force=False):
+    def produce():
+        curr = _eta_data(ETA_CURRENT_TERM_URL)
+        current_term = str((curr or {}).get('xnxq') or '')
+        selected = str(term or current_term)
+        if not selected:
+            raise RuntimeError('ETA 未返回当前学期')
+        url = ETA_TIMETABLE_URL + '?' + urllib.parse.urlencode({
+            'xh': CURRENT_STUID, 'xnxq': selected,
+        })
+        table = _eta_data(url, timeout=45)
+        return {
+            'term': selected,
+            'current_term': current_term,
+            'kb_list': (table or {}).get('kbList') or {},
+            'practice_courses': (table or {}).get('sjkc') or [],
+        }
+    key = 'eta_timetable:%s' % (term or 'current')
+    return cached(key, 300, produce, force=force)
+
+
+SCHEDULE_ADJUSTMENTS_FILE = os.path.join(DATA_DIR, 'schedule_adjustments.json')
+_SCHEDULE_ADJUSTMENTS_LOCK = threading.Lock()
+
+
+def _load_schedule_adjustments():
+    try:
+        with open(SCHEDULE_ADJUSTMENTS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_schedule_adjustments(items):
+    tmp = SCHEDULE_ADJUSTMENTS_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, SCHEDULE_ADJUSTMENTS_FILE)
+
+
+def get_schedule_adjustments(term=''):
+    owner = CURRENT_STUID
+    with _SCHEDULE_ADJUSTMENTS_LOCK:
+        return [dict(x) for x in _load_schedule_adjustments()
+                if x.get('owner') == owner and
+                (not term or str(x.get('term') or '') == str(term))]
+
+
+def _adjustment_slot_keys(item):
+    keys = item.get('slot_keys')
+    if not isinstance(keys, list):
+        keys = [item.get('slot_key')]
+    return [str(x) for x in keys if x]
+
+
+def api_schedule_adjustment(payload):
+    """保存课表的本地覆盖；绝不回写 ETA。"""
+    owner = CURRENT_STUID
+    if not owner:
+        return {'ok': False, 'error': '尚未登录'}
+    action = str(payload.get('action') or 'create')
+    with _SCHEDULE_ADJUSTMENTS_LOCK:
+        items = _load_schedule_adjustments()
+        if action == 'delete':
+            adjustment_id = str(payload.get('id') or '')
+            before = len(items)
+            items = [x for x in items if not
+                     (x.get('owner') == owner and x.get('id') == adjustment_id)]
+            if len(items) == before:
+                return {'ok': False, 'error': '调整记录不存在'}
+        elif action == 'create':
+            kind = str(payload.get('kind') or '')
+            if kind not in ('cancel_once', 'move_once', 'hide_series'):
+                return {'ok': False, 'error': '不支持的调整类型'}
+            term = str(payload.get('term') or '').strip()[:40]
+            slot_key = str(payload.get('slot_key') or '').strip()[:500]
+            payload_keys = payload.get('slot_keys')
+            if not isinstance(payload_keys, list):
+                payload_keys = [slot_key]
+            slot_keys = list(dict.fromkeys(
+                str(x).strip()[:500] for x in payload_keys if str(x).strip()))[:20]
+            if slot_keys:
+                slot_key = slot_keys[0]
+            occurrence = str(payload.get('occurrence_date') or '').strip()
+            name = str(payload.get('course_name') or '').strip()[:200]
+            if not term or not slot_key or not name:
+                return {'ok': False, 'error': '课程调整信息不完整'}
+            if kind != 'hide_series':
+                try:
+                    datetime.date.fromisoformat(occurrence)
+                except Exception:
+                    return {'ok': False, 'error': '原上课日期无效'}
+            record = {
+                'id': secrets.token_hex(8), 'owner': owner, 'kind': kind,
+                'term': term, 'slot_key': slot_key, 'slot_keys': slot_keys,
+                'occurrence_date': occurrence if kind != 'hide_series' else '',
+                'course_name': name,
+                'course_id': payload.get('course_id'),
+                'course_code': str(payload.get('course_code') or '')[:100],
+                'teacher': str(payload.get('teacher') or '')[:200],
+                'room': str(payload.get('room') or '')[:200],
+                'raw_time': str(payload.get('raw_time') or '')[:300],
+                'original_weekday': payload.get('original_weekday'),
+                'original_start_period': payload.get('original_start_period'),
+                'original_period_count': payload.get('original_period_count'),
+                'created_at': datetime.datetime.now().astimezone().isoformat(timespec='seconds'),
+            }
+            if kind == 'move_once':
+                new_date = str(payload.get('new_date') or '').strip()
+                try:
+                    datetime.date.fromisoformat(new_date)
+                    start = int(payload.get('new_start_period'))
+                    count = int(payload.get('new_period_count') or
+                                payload.get('original_period_count') or 1)
+                except Exception:
+                    return {'ok': False, 'error': '新日期或节次无效'}
+                if not 0 <= start <= 13 or not 1 <= count <= 14 - start:
+                    return {'ok': False, 'error': '新节次超出 0—13 节范围'}
+                record.update({
+                    'new_date': new_date, 'new_start_period': start,
+                    'new_period_count': count,
+                    'new_room': str(payload.get('new_room') or '')[:200],
+                })
+
+            # 同一节课、同一次日期只能有一条“停课/调课”；系列隐藏也只保留一条。
+            def conflicts(old):
+                if old.get('owner') != owner or old.get('term') != term:
+                    return False
+                if not set(_adjustment_slot_keys(old)).intersection(slot_keys):
+                    return False
+                if kind == 'hide_series':
+                    return old.get('kind') == 'hide_series'
+                return (old.get('kind') in ('cancel_once', 'move_once') and
+                        old.get('occurrence_date') == occurrence)
+            items = [x for x in items if not conflicts(x)]
+            items.append(record)
+        else:
+            return {'ok': False, 'error': '未知操作'}
+        try:
+            _save_schedule_adjustments(items)
+        except Exception as e:
+            return {'ok': False, 'error': '保存课表调整失败：' + str(e)}
+    return {'ok': True}
+
+
+def fetch_eta_timetable(start_date=None, term='', force=False):
+    if not CURRENT_STUID:
+        raise RuntimeError('课表需要学号，请退出后重新登录一次')
+    today = datetime.date.today()
+    if start_date:
+        chosen = datetime.date.fromisoformat(start_date)
+    else:
+        chosen = today
+    monday = chosen - datetime.timedelta(days=chosen.weekday())
+
+    bundle = _fetch_eta_timetable_bundle(term=term, force=force)
+    norm = _normalise_eta_timetable(bundle['kb_list'])
+    adjustments = get_schedule_adjustments(bundle['term'])
+    manual_counts = get_manual_task_counts()
+    hidden_slots = {key for x in adjustments if x.get('kind') == 'hide_series'
+                    for key in _adjustment_slot_keys(x)}
+    once_adjustments = {(key, x.get('occurrence_date')): x
+                        for x in adjustments
+                        if x.get('kind') in ('cancel_once', 'move_once')
+                        for key in _adjustment_slot_keys(x)}
+    try:
+        date_info = cached('eta_date_info', 300,
+                           lambda: _eta_data(ETA_DATE_INFO_URL), force=force)
+    except Exception:
+        date_info = {}
+    try:
+        term_raw = cached('eta_term_list', 3600, lambda: _eta_data(
+            ETA_TERM_LIST_URL + '?' + urllib.parse.urlencode({'xh': CURRENT_STUID})))
+        if isinstance(term_raw, dict):
+            term_raw = (term_raw.get('xnList') or term_raw.get('list') or
+                        term_raw.get('items') or [])
+        terms = _term_options(term_raw)
+    except Exception:
+        terms = []
+
+    days = []
+    for offset in range(7):
+        actual = monday + datetime.timedelta(days=offset)
+        actual_iso = actual.isoformat()
+        override = ACADEMIC_DATE_OVERRIDES.get(actual_iso)
+        source = datetime.date.fromisoformat(override['source_date']) if override else actual
+        source_segment = _segment_for_date(source)
+        cancelled = actual_iso in ACADEMIC_HOLIDAYS and not override
+        blocks_out = []
+        if not cancelled:
+            for block in norm.get(source.isoweekday(), []):
+                active = []
+                for original in block['courses']:
+                    if not _rule_active(original['rule'], source_segment):
+                        continue
+                    if original.get('slot_key') in hidden_slots:
+                        continue
+                    if (original.get('slot_key'), actual_iso) in once_adjustments:
+                        continue
+                    course = dict(original)
+                    course.update({
+                        'occurrence_date': actual_iso,
+                        'original_occurrence_date': actual_iso,
+                        'original_weekday': source.isoweekday(),
+                        'original_start_period': block['start_period'],
+                        'original_period_count': block['period_count'],
+                    })
+                    course.update(manual_task_summary(course, manual_counts))
+                    active.append(course)
+                if active:
+                    blocks_out.append({
+                        'start_period': block['start_period'],
+                        'period_count': block['period_count'],
+                        'courses': active,
+                    })
+            blocks_out = _merge_adjacent_course_blocks(blocks_out)
+        days.append({
+            'date': actual_iso,
+            'weekday': actual.isoweekday(),
+            'source_date': source.isoformat(),
+            'source_weekday': source.isoweekday(),
+            'segment': source_segment['name'] if source_segment else '',
+            'segment_label': source_segment['label'] if source_segment else '',
+            'teaching_week': source_segment['week'] if source_segment else None,
+            'is_today': actual == today,
+            'cancelled': cancelled,
+            'notice': (override or {}).get('label') or ACADEMIC_HOLIDAYS.get(actual_iso, ''),
+            'blocks': blocks_out,
+        })
+
+    # 被调到本周的课程作为本地事件插入；即使目标日原本是假期，也尊重手工调整。
+    day_map = {x['date']: x for x in days}
+    for item in adjustments:
+        item_slots = _adjustment_slot_keys(item)
+        if item.get('kind') != 'move_once' or hidden_slots.intersection(item_slots):
+            continue
+        target = day_map.get(item.get('new_date'))
+        if not target:
+            continue
+        course = {
+            'name': item.get('course_name') or '',
+            'teacher': item.get('teacher') or '',
+            'room': item.get('new_room') or item.get('room') or '',
+            'course_code': item.get('course_code') or '',
+            'course_id': item.get('course_id'),
+            'raw_time': item.get('raw_time') or '',
+            'slot_key': item.get('slot_key') or '',
+            'slot_keys': item_slots,
+            'occurrence_date': item.get('new_date'),
+            'original_occurrence_date': item.get('occurrence_date'),
+            'original_weekday': item.get('original_weekday'),
+            'original_start_period': item.get('original_start_period'),
+            'original_period_count': item.get('original_period_count'),
+            'local_adjustment': 'move_once',
+            'adjustment_id': item.get('id'),
+        }
+        course.update(manual_task_summary(course, manual_counts))
+        target['blocks'].append({
+            'start_period': item.get('new_start_period'),
+            'period_count': item.get('new_period_count'),
+            'local_adjustment': True,
+            'courses': [course],
+        })
+    for day in days:
+        day['blocks'].sort(key=lambda x: int(x.get('start_period') or 0))
+
+    return {
+        'local_now': datetime.datetime.now().astimezone().isoformat(timespec='seconds'),
+        'today': today.isoformat(),
+        'week_start': monday.isoformat(),
+        'week_end': (monday + datetime.timedelta(days=6)).isoformat(),
+        'term': bundle['term'],
+        'current_term': bundle['current_term'],
+        'terms': terms,
+        'current': {
+            'academic_year': str((date_info or {}).get('currXn') or ''),
+            'semester': str((date_info or {}).get('currXq') or ''),
+            'teaching_week': (date_info or {}).get('currZs'),
+        },
+        'days': days,
+        'practice_courses': bundle['practice_courses'],
+        'adjustments': adjustments,
+        # 前端用它生成每一天顶部的“截止任务”清单；只返回当前登录用户的本地待办。
+        'manual_tasks': get_all_manual_tasks(),
+    }
+
+
+MANUAL_TASKS_FILE = os.path.join(DATA_DIR, 'manual_tasks.json')
+_MANUAL_TASKS_LOCK = threading.Lock()
+
+
+def _load_manual_tasks():
+    try:
+        with open(MANUAL_TASKS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_manual_tasks(items):
+    tmp = MANUAL_TASKS_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, MANUAL_TASKS_FILE)
+
+
+def get_manual_tasks(course_id=None, course_name=''):
+    owner = CURRENT_STUID
+    key = _course_name_key(course_name)
+    out = []
+    with _MANUAL_TASKS_LOCK:
+        for item in _load_manual_tasks():
+            if item.get('owner') != owner:
+                continue
+            same_id = (course_id is not None and item.get('course_id') is not None and
+                       str(item.get('course_id')) == str(course_id))
+            same_name = key and item.get('course_key') == key
+            if same_id or same_name:
+                out.append(item)
+    return out
+
+
+def get_all_manual_tasks():
+    """返回当前登录用户的全部本地待办，供周课表按日期汇总。"""
+    owner = CURRENT_STUID
+    with _MANUAL_TASKS_LOCK:
+        return [dict(item) for item in _load_manual_tasks()
+                if item.get('owner') == owner]
+
+
+def get_manual_task_counts():
+    """一次读取本机待办，为周课表上的标签生成轻量统计。"""
+    owner = CURRENT_STUID
+    by_id, by_name = {}, {}
+    with _MANUAL_TASKS_LOCK:
+        items = _load_manual_tasks()
+    for item in items:
+        if item.get('owner') != owner:
+            continue
+        stat = {'all': 1, 'todo': 0 if item.get('done') else 1}
+        cid = item.get('course_id')
+        if cid is not None:
+            target = by_id.setdefault(str(cid), {'all': 0, 'todo': 0})
+            target['all'] += stat['all']; target['todo'] += stat['todo']
+        key = item.get('course_key') or _course_name_key(item.get('course_name'))
+        if key:
+            target = by_name.setdefault(key, {'all': 0, 'todo': 0})
+            target['all'] += stat['all']; target['todo'] += stat['todo']
+    return {'by_id': by_id, 'by_name': by_name}
+
+
+def manual_task_summary(course, counts):
+    cid = course.get('course_id')
+    stat = counts.get('by_id', {}).get(str(cid)) if cid is not None else None
+    if stat is None:
+        stat = counts.get('by_name', {}).get(_course_name_key(course.get('name')), {})
+    return {'manual_task_count': int(stat.get('all') or 0),
+            'manual_task_todo': int(stat.get('todo') or 0)}
+
+
+def api_manual_task(payload):
+    action = str(payload.get('action') or 'create')
+    owner = CURRENT_STUID
+    if not owner:
+        return {'ok': False, 'error': '尚未登录'}
+    with _MANUAL_TASKS_LOCK:
+        items = _load_manual_tasks()
+        if action == 'create':
+            title = str(payload.get('title') or '').strip()[:300]
+            name = str(payload.get('course_name') or '').strip()[:200]
+            if not title or not name:
+                return {'ok': False, 'error': '任务内容和课程名不能为空'}
+            # 待办只按“哪一天”管理；兼容旧前端可能传来的 ISO 日期时间，统一截成日期。
+            deadline = str(payload.get('deadline') or '').strip()[:32]
+            if not deadline:
+                return {'ok': False, 'error': '请填写任务截止日期'}
+            try:
+                deadline = datetime.date.fromisoformat(deadline[:10]).isoformat()
+            except Exception:
+                return {'ok': False, 'error': '截止日期格式无效'}
+            cid = payload.get('course_id')
+            try:
+                cid = int(cid) if cid not in (None, '') else None
+            except Exception:
+                cid = None
+            item = {
+                'id': secrets.token_hex(8), 'owner': owner, 'course_id': cid,
+                'course_name': name, 'course_key': _course_name_key(name),
+                'title': title, 'deadline': deadline, 'done': False,
+                'created_at': datetime.datetime.now().astimezone().isoformat(timespec='seconds'),
+            }
+            items.append(item)
+        elif action in ('toggle', 'delete'):
+            task_id = str(payload.get('id') or '')
+            found = None
+            for item in items:
+                if item.get('id') == task_id and item.get('owner') == owner:
+                    found = item
+                    break
+            if not found:
+                return {'ok': False, 'error': '任务不存在'}
+            if action == 'delete':
+                items.remove(found)
+            else:
+                found['done'] = bool(payload.get('done'))
+                found['updated_at'] = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+        else:
+            return {'ok': False, 'error': '未知操作'}
+        try:
+            _save_manual_tasks(items)
+        except Exception as e:
+            return {'ok': False, 'error': '保存任务失败：' + str(e)}
+    return {'ok': True}
+
+
+def api_course_todos(course_id, course_name=''):
+    try:
+        cid = int(course_id)
+    except Exception:
+        return {'ok': False, 'error': 'course_id 无效'}
+    name = str(course_name or '').strip()
+    if not name:
+        try:
+            name = next((c['name'] for c in get_courses() if c.get('id') == cid), '')
+        except Exception:
+            name = ''
+
+    def fetch_resources():
+        data = get_courseware(cid)
+        out = []
+        for a in data.get('activities') or []:
+            for u in a.get('uploads') or []:
+                filename = str(u.get('name') or '')
+                ext = os.path.splitext(filename)[1].lower()
+                if ext in ('.ppt', '.pptx', '.pdf') or '课件' in str(a.get('title') or ''):
+                    out.append({'id': u.get('id'), 'name': filename,
+                                'activity': a.get('title') or ''})
+        return out[:40]
+
+    def fetch_lives():
+        return cached('lives_v1_%s' % cid, 21600, lambda: _fetch_lives(cid))
+
+    resources, homeworks, lives, warnings = [], [], [], []
+    jobs = {
+        '课件': (fetch_resources, 'resources'),
+        '作业': (lambda: get_course_homework(cid, name), 'homeworks'),
+        '智云回放': (fetch_lives, 'lives'),
+    }
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        pending = {pool.submit(fn): (label, target)
+                   for label, (fn, target) in jobs.items()}
+        for future, (label, target) in pending.items():
+            try:
+                value = future.result()
+                if target == 'resources':
+                    resources = value
+                elif target == 'homeworks':
+                    homeworks = value
+                else:
+                    lives = value
+            except Exception as e:
+                warnings.append('%s加载失败：%s' % (label, e))
+    local_files = []
+    local_folder = ''
+    local_data = api_course_folder(cid, name)
+    if local_data.get('ok'):
+        local_files = local_data.get('files') or []
+        local_folder = local_data.get('folder') or ''
+        if local_data.get('warning'):
+            warnings.append(local_data['warning'])
+    else:
+        warnings.append('本地课件加载失败：' + str(local_data.get('error') or '未知错误'))
+    hw_out = [{k: h.get(k) for k in ('id', 'title', 'deadline', 'status', 'submitted')}
+              for h in homeworks]
+    return {'ok': True, 'course_id': cid, 'course_name': name,
+            'homeworks': hw_out, 'resources': resources, 'lives': lives,
+            'local_files': local_files, 'local_folder': local_folder,
+            'manual_tasks': get_manual_tasks(cid, name), 'warnings': warnings}
+
+
+def api_timetable(start_date='', term='', force=False):
+    try:
+        return {'ok': True, **fetch_eta_timetable(start_date or None, term, force)}
+    except ValueError:
+        return {'ok': False, 'error': '日期格式无效'}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
 
