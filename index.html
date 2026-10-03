@@ -2067,7 +2067,8 @@ async function openDetail(courseId, courseName) {
   const [cwRes, hwRes, lvRes, localRes] = await Promise.all([
     api("/api/courseware?course_id=" + encodeURIComponent(courseId)),
     api("/api/course-homework?course_id=" + encodeURIComponent(courseId)),
-    api("/api/course-lives?course_id=" + encodeURIComponent(courseId)),
+    api("/api/course-lives?course_id=" + encodeURIComponent(courseId)
+        + "&course_name=" + encodeURIComponent(DETAIL_COURSE_NAME)),
     api("/api/course-folder?" + folderQuery),
   ]);
 
@@ -2166,9 +2167,11 @@ async function openDetail(courseId, courseName) {
   // ---- 课堂录播（智云课堂）----
   for (const k in DETAIL_LIVES) delete DETAIL_LIVES[k];
   const lives = (lvRes.ok ? (lvRes.lives || []) : []);
-  let livesHtml = "";
+  let livesHtml = `<div class="empty">该课程暂无可用的智云课堂录播。</div>`;
   if (lvRes.ok && lives.length) {
     livesHtml = lives.map(l => liveRowHtml(l)).join("");
+  } else if (!lvRes.ok) {
+    livesHtml = `<div class="empty">智云课堂加载失败：${esc(lvRes.error || "未知错误")}</div>`;
   }
 
   $("#detailBody").innerHTML = `
@@ -2196,13 +2199,12 @@ async function openDetail(courseId, courseName) {
           <h3 class="sec-title">📚 章节与资源</h3>
           <div id="chBox">${chHtml}</div>
         </div>
-        ${livesHtml ? `
         <div class="detail-sec" id="sec-live">
           <h3 class="sec-title">🎥 课堂录播
-            <span class="toggle" style="cursor:default">智云课堂 · 共 ${lives.length} 节</span>
+            <span class="toggle" style="cursor:default">智云课堂${lives.length ? ` · 共 ${lives.length} 节` : ""}</span>
           </h3>
           <div id="liveBox">${livesHtml}</div>
-        </div>` : ""}
+        </div>
       </div>
       <nav class="detail-toc" id="toc"><div class="toc-h">目录</div></nav>
     </div>`;
@@ -2210,11 +2212,11 @@ async function openDetail(courseId, courseName) {
   renderHomeworkBox();
   renderLocalCourseFiles(localRes);
 
-  buildToc(chapters, !!livesHtml, true);
+  buildToc(chapters, true, true);
 
   const hwN = (hwRes.ok ? DETAIL_HW.length : 0);
   const chN = chapters.length;
-  const lvN = livesHtml ? lives.length : 0;
+  const lvN = lives.length;
   const localN = localRes.ok ? (localRes.files || []).length : 0;
   $("#detailMeta").textContent =
     `共 ${hwN} 项作业 · ${chN} 个章节 · ${localN} 个本地 PDF` + (lvN ? ` · ${lvN} 节录播` : "");
@@ -2223,7 +2225,10 @@ async function openDetail(courseId, courseName) {
 // ---- 课堂录播（智云课堂）----
 // 列表来自学在浙大 extension-lives；PPT 与自动字幕都由后端复用智云登录态导出。
 const DETAIL_LIVES = {};   // sub_id -> 录播条目（给导出按钮取 page_view_url 等）
-const LIVE_STATUS_CN = {expired: "已结束", living: "直播中", notStarted: "未开始", notstarted: "未开始"};
+const LIVE_STATUS_CN = {
+  expired: "已结束", living: "直播中", notStarted: "未开始", notstarted: "未开始",
+  processing: "回放生成中", unavailable: "暂无回放"
+};
 function liveRowHtml(l) {
   DETAIL_LIVES[l.sub_id] = l;
   // 标题形如「课程名/教室/2026-03-02第6-9节」→ 拆出日期节次与教室

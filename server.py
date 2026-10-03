@@ -1568,7 +1568,7 @@ def api_open_download_dir():
 CMC_BASE = 'https://classroom.zju.edu.cn'
 
 
-def _cmc_bearer_token(page_view_url=''):
+def _cmc_bearer_token(page_view_url='', force=False):
     """
     取智云课堂的 Bearer JWT：优先解会话里已有的 _token Cookie；
     没有就走一次 tgmedia 免登跳转把它换回来（全程不需要密码）。
@@ -1586,6 +1586,13 @@ def _cmc_bearer_token(page_view_url=''):
                     return v
         return ''
 
+    if force:
+        for c in list(COOKIE_JAR):
+            if c.name == '_token' and 'zju.edu.cn' in (c.domain or ''):
+                try:
+                    COOKIE_JAR.clear(c.domain, c.path, c.name)
+                except Exception:
+                    pass
     tok = _unpack()
     if tok:
         return tok
@@ -1603,11 +1610,21 @@ def _cmc_bearer_token(page_view_url=''):
     return _unpack()
 
 
-def _fetch_lives(course_id):
-    """拉某门课的课堂直录播列表（学在浙大 extension-lives 接口）。"""
-    data = _get_json('https://courses.zju.edu.cn/api/courses/%s/extension-lives'
-                     '?source=chinamcloud_live' % course_id)
-    lives = (data.get('lives') if isinstance(data, dict) else None) or []
+def _normalise_cmc_course_code(value):
+    """统一教学班编码；学在浙大偶尔比智云编码多一个末尾 A。"""
+    code = re.sub(r'\s+', '', str(value or '')).upper()
+    return re.sub(r'(?<=\d)A$', '', code)
+
+
+def _teacher_names(value):
+    if isinstance(value, (list, tuple, set)):
+        parts = value
+    else:
+        parts = re.split(r'[,，、;/\s]+', str(value or ''))
+    return {str(x or '').strip() for x in parts if str(x or '').strip()}
+
+
+def _format_extension_lives(lives):
     out = []
     for l in lives:
         try:
@@ -1621,18 +1638,136 @@ def _fetch_lives(course_id):
             'status': l.get('status') or '',
             'duration_min': int(dur / 60) if dur else 0,
             'page_view_url': l.get('page_view_url') or '',
+            'source': 'extension-lives',
         })
     out.sort(key=lambda x: x['start_time'], reverse=True)
     return out
 
 
-def api_course_lives(course_id):
+def _fetch_cmc_lives_by_course_code(wybh, course_name, instructors):
+    """extension-lives 关联失败时，按规范化教学班编码从智云严格反查。"""
+    target_code = _normalise_cmc_course_code(wybh)
+    if not target_code or not str(course_name or '').strip():
+        return []
+    bearer = _cmc_bearer_token(CMC_BASE + '/?tenant_code=112')
+    if not bearer:
+        return []
+    query = urllib.parse.urlencode({
+        'like_title': str(course_name).strip(),
+        'tenant': '112',
+        'with_sub_data': 1,
+        'all': 1,
+        'show_all': 1,
+        'show_delete': 2,
+    })
+    url = CMC_BASE + '/courseapi/v2/course-live/search-live-course-list?' + query
+    session = HttpSession(COOKIE_JAR, SSL_CONTEXT, timeout=30)
+
+    def request_data(token):
+        response = session.request(
+            'GET', url, headers={'Authorization': 'Bearer ' + token,
+                                 'Accept': 'application/json'})
+        return response.status, response.json()
+
+    status, data = request_data(bearer)
+    if (isinstance(data, dict) and str(data.get('code')) == '5006'):
+        bearer = _cmc_bearer_token(CMC_BASE + '/?tenant_code=112', force=True)
+        if not bearer:
+            return []
+        status, data = request_data(bearer)
+    if status != 200:
+        return []
+    if not isinstance(data, dict) or data.get('code') != 0:
+        return []
+
+    expected_teachers = _teacher_names(instructors)
+    status_map = {
+        '1': 'living', '2': 'notStarted', '3': 'processing',
+        '5': 'unavailable', '6': 'expired',
+    }
+    out = []
+    seen = set()
+    for item in data.get('list') or []:
+        if not isinstance(item, dict):
+            continue
+        if _normalise_cmc_course_code(item.get('course_code')) != target_code:
+            continue
+        actual_teachers = _teacher_names(item.get('lecturer_name'))
+        if expected_teachers and actual_teachers and not (expected_teachers & actual_teachers):
+            continue
+        sub_id = str(item.get('sub_id') or '').strip()
+        cmc_course_id = str(item.get('course_id') or item.get('id') or '').strip()
+        if not sub_id or not cmc_course_id or sub_id in seen:
+            continue
+        seen.add(sub_id)
+        try:
+            start_seconds = float(item.get('start_at') or item.get('course_begin') or 0)
+            start_time = datetime.datetime.fromtimestamp(
+                start_seconds, datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
+        except Exception:
+            start_time = ''
+        try:
+            duration = int(float(item.get('sub_duration') or 0))
+        except Exception:
+            duration = 0
+        title = str(item.get('title') or course_name).strip()
+        room = str(item.get('room_name') or '').strip()
+        sub_title = str(item.get('sub_title') or '').strip()
+        display_title = '/'.join(x for x in (title, room, sub_title) if x)
+        page_view_url = CMC_BASE + '/livingroom?' + urllib.parse.urlencode({
+            'course_id': cmc_course_id, 'sub_id': sub_id, 'tenant_code': '112',
+        })
+        out.append({
+            'sub_id': sub_id,
+            'title': display_title,
+            'start_time': start_time,
+            'status': status_map.get(str(item.get('sub_status') or ''),
+                                     str(item.get('sub_status') or '')),
+            'duration_min': int(duration / 60) if duration else 0,
+            'page_view_url': page_view_url,
+            'source': 'classroom-course-code-fallback',
+        })
+    out.sort(key=lambda x: x['start_time'], reverse=True)
+    return out
+
+
+def _fetch_lives(course_id, course_name=''):
+    """
+    拉某门课的课堂直录播列表。优先用学在浙大 extension-lives；若其因教学班
+    编码尾缀 A 失配而返回空列表，再用智云接口按课程编码和教师严格兜底。
+    """
+    data = _get_json('https://courses.zju.edu.cn/api/courses/%s/extension-lives'
+                     '?source=chinamcloud_live' % course_id)
+    lives = (data.get('lives') if isinstance(data, dict) else None) or []
+    if lives:
+        return _format_extension_lives(lives)
+
+    wybh = data.get('wybh') if isinstance(data, dict) else ''
+    if not wybh:
+        return []
+    try:
+        detail = _get_json('https://courses.zju.edu.cn/api/courses/%s' % course_id,
+                           timeout=20)
+    except Exception:
+        detail = {}
+    name = str(course_name or detail.get('name') or '').strip()
+    instructors = [(x.get('name') or '').strip()
+                   for x in (detail.get('instructors') or []) if isinstance(x, dict)]
+    try:
+        return _fetch_cmc_lives_by_course_code(wybh, name, instructors)
+    except Exception:
+        # 兜底查询失败不影响课程详情其它内容，仍按“暂无录播”返回。
+        return []
+
+
+def api_course_lives(course_id, course_name=''):
     try:
         cid = int(course_id)
     except Exception:
         return {'ok': False, 'error': 'course_id 无效'}
     try:
-        lives = cached('lives_v1_%s' % cid, 21600, lambda: _fetch_lives(cid))
+        lives = cached('lives_v2_%s' % cid, 600,
+                       lambda: _fetch_lives(cid, course_name))
         return {'ok': True, 'lives': lives}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
@@ -2394,7 +2529,7 @@ class Handler(BaseHTTPRequestHandler):
             if not cid:
                 self._json({'ok': False, 'error': '缺少 course_id'}, 400)
                 return
-            self._json(api_course_lives(cid))
+            self._json(api_course_lives(cid, qs.get('course_name', [''])[0]))
             return
         if path.startswith('/api/download/'):
             uid = path[len('/api/download/'):].split('?')[0]
@@ -3451,7 +3586,7 @@ def api_course_todos(course_id, course_name=''):
         return out[:40]
 
     def fetch_lives():
-        return cached('lives_v1_%s' % cid, 21600, lambda: _fetch_lives(cid))
+        return cached('lives_v2_%s' % cid, 600, lambda: _fetch_lives(cid, name))
 
     resources, homeworks, lives, warnings = [], [], [], []
     jobs = {
