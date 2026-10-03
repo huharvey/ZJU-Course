@@ -3,6 +3,7 @@ session.dat
 manual_tasks.json
 schedule_adjustments.json
 course_folders.json
+timetable_cache.json
 download_dir.json
 *.tmp
 

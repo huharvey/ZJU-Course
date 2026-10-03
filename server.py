@@ -2562,7 +2562,8 @@ class Handler(BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             self._json(api_timetable(
                 qs.get('start', [''])[0], qs.get('term', [''])[0],
-                force='force' in qs))
+                force='force' in qs, weeks=qs.get('weeks', ['1'])[0],
+                cache_only='cache_only' in qs))
             return
         if path == '/api/course-todos':
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -3078,9 +3079,15 @@ def _merge_adjacent_course_blocks(blocks):
     return merged
 
 
-def _normalise_eta_timetable(kb_list):
+def _normalise_eta_timetable(kb_list, previous=None):
     """保留 ETA 的时间块结构；块内 ke 数组用于表达同一时段的多门/冲突课程。"""
-    course_map = _course_id_map()
+    try:
+        course_map = _course_id_map()
+    except Exception:
+        course_map = {}
+    previous_ids = {_course_name_key(c.get('name')): c.get('course_id')
+                    for blocks in (previous or {}).values() for b in blocks
+                    for c in b.get('courses', [])}
     by_weekday = {i: [] for i in range(1, 8)}
     if not isinstance(kb_list, dict):
         return by_weekday
@@ -3110,7 +3117,7 @@ def _normalise_eta_timetable(kb_list):
                     'teacher': str(raw.get('rkjs') or '').strip(),
                     'room': str(raw.get('jsmc') or '').strip(),
                     'course_code': str(raw.get('kcdm') or '').strip(),
-                    'course_id': matched.get('id'),
+                    'course_id': matched.get('id') or previous_ids.get(_course_name_key(name)),
                     'raw_time': raw_time,
                     'exam_time': str(raw.get('kssj') or '').strip(),
                     'rule': _parse_week_rule(raw_time, block.get('dsz')),
@@ -3144,7 +3151,63 @@ def _term_options(raw):
     return out
 
 
-def _fetch_eta_timetable_bundle(term='', force=False):
+TIMETABLE_CACHE_FILE = os.path.join(DATA_DIR, 'timetable_cache.json')
+_TIMETABLE_CACHE_LOCK = threading.Lock()
+
+
+def _read_timetable_cache():
+    try:
+        with open(TIMETABLE_CACHE_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if (not isinstance(data, dict) or data.get('version') != 1
+                or not isinstance(data.get('accounts'), dict)):
+            return {}
+        # 损坏的账号条目不影响其他账号，也不阻止重新同步。
+        data['accounts'] = {key: value for key, value in data['accounts'].items()
+                            if isinstance(value, dict) and isinstance(value.get('terms'), dict)}
+        return data
+    except (OSError, ValueError):
+        return {}
+
+
+def _saved_timetable_bundle(owner, term=''):
+    with _TIMETABLE_CACHE_LOCK:
+        account = _read_timetable_cache().get('accounts', {}).get(owner, {})
+        selected = term or account.get('current_term', '')
+        bundle = account.get('terms', {}).get(selected)
+        if (isinstance(bundle, dict) and bundle.get('term') == selected
+                and isinstance(bundle.get('normalised'), dict)
+                and isinstance(bundle.get('kb_list'), dict)
+                and isinstance(bundle.get('synced_at'), (int, float))):
+            return bundle
+    return None
+
+
+def _save_timetable_bundle(owner, bundle):
+    """只写入成功的完整快照；网络失败和磁盘写入失败都保留上一份。"""
+    with _TIMETABLE_CACHE_LOCK:
+        data = _read_timetable_cache()
+        data['version'] = 1
+        account = data.setdefault('accounts', {}).setdefault(owner, {})
+        account['current_term'] = bundle['current_term']
+        account.setdefault('terms', {})[bundle['term']] = bundle
+        tmp = TIMETABLE_CACHE_FILE + '.tmp'
+        try:
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, TIMETABLE_CACHE_FILE)
+        except OSError:
+            pass
+
+
+def _fetch_eta_timetable_bundle(term='', force=False, cache_only=False):
+    owner = CURRENT_STUID
+    saved = _saved_timetable_bundle(owner, term)
+    if cache_only:
+        if saved is None:
+            raise RuntimeError('本机尚未缓存该学期课表，请联网同步一次')
+        return dict(saved, stale=time.time() - saved['synced_at'] >= 300)
+
     def produce():
         curr = _eta_data(ETA_CURRENT_TERM_URL)
         current_term = str((curr or {}).get('xnxq') or '')
@@ -3152,17 +3215,56 @@ def _fetch_eta_timetable_bundle(term='', force=False):
         if not selected:
             raise RuntimeError('ETA 未返回当前学期')
         url = ETA_TIMETABLE_URL + '?' + urllib.parse.urlencode({
-            'xh': CURRENT_STUID, 'xnxq': selected,
+            'xh': owner, 'xnxq': selected,
         })
         table = _eta_data(url, timeout=45)
-        return {
+        if not isinstance(table, dict) or not isinstance(table.get('kbList'), dict):
+            raise RuntimeError('ETA 返回的课表数据不完整，保留上次课表')
+        previous = _saved_timetable_bundle(owner, selected) or {}
+        bundle = {
             'term': selected,
             'current_term': current_term,
-            'kb_list': (table or {}).get('kbList') or {},
+            'kb_list': table['kbList'],
             'practice_courses': (table or {}).get('sjkc') or [],
+            'normalised': _normalise_eta_timetable(table['kbList'], previous.get('normalised')),
+            'synced_at': time.time(),
         }
-    key = 'eta_timetable:%s' % (term or 'current')
-    return cached(key, 300, produce, force=force)
+        # 这些辅助数据失败时沿用旧值，不阻止课表保存。
+        try:
+            info = _eta_data(ETA_DATE_INFO_URL)
+            bundle['date_info'] = info if isinstance(info, dict) else previous.get('date_info', {})
+        except Exception:
+            bundle['date_info'] = previous.get('date_info', {})
+        try:
+            raw = _eta_data(ETA_TERM_LIST_URL + '?' + urllib.parse.urlencode({'xh': owner}))
+            if isinstance(raw, dict):
+                raw = raw.get('xnList') or raw.get('list') or raw.get('items') or []
+            bundle['terms'] = _term_options(raw)
+        except Exception:
+            bundle['terms'] = previous.get('terms', [])
+        if CURRENT_STUID != owner:
+            raise RuntimeError('登录账号已变化，请重新加载课表')
+        _save_timetable_bundle(owner, bundle)
+        return bundle
+
+    key = 'eta_timetable:%s:%s' % (owner, term or 'current')
+    try:
+        return dict(cached(key, 300, produce, force=force), stale=False)
+    except Exception as exc:
+        if saved is None or CURRENT_STUID != owner:
+            raise
+        return dict(saved, stale=True, sync_error=str(exc))
+
+
+def _timetable_context(term='', force=False, cache_only=False):
+    bundle = _fetch_eta_timetable_bundle(term, force, cache_only)
+    return {
+        'bundle': bundle,
+        'norm': {int(k): v for k, v in bundle['normalised'].items()},
+        'adjustments': get_schedule_adjustments(bundle['term']),
+        'manual_counts': get_manual_task_counts(),
+        'manual_tasks': get_all_manual_tasks(),
+    }
 
 
 SCHEDULE_ADJUSTMENTS_FILE = os.path.join(DATA_DIR, 'schedule_adjustments.json')
@@ -3290,7 +3392,7 @@ def api_schedule_adjustment(payload):
     return {'ok': True}
 
 
-def fetch_eta_timetable(start_date=None, term='', force=False):
+def fetch_eta_timetable(start_date=None, term='', force=False, _context=None):
     if not CURRENT_STUID:
         raise RuntimeError('课表需要学号，请退出后重新登录一次')
     today = datetime.date.today()
@@ -3300,30 +3402,19 @@ def fetch_eta_timetable(start_date=None, term='', force=False):
         chosen = today
     monday = chosen - datetime.timedelta(days=chosen.weekday())
 
-    bundle = _fetch_eta_timetable_bundle(term=term, force=force)
-    norm = _normalise_eta_timetable(bundle['kb_list'])
-    adjustments = get_schedule_adjustments(bundle['term'])
-    manual_counts = get_manual_task_counts()
+    context = _context or _timetable_context(term, force)
+    bundle = context['bundle']
+    norm = context['norm']
+    adjustments = context['adjustments']
+    manual_counts = context['manual_counts']
     hidden_slots = {key for x in adjustments if x.get('kind') == 'hide_series'
                     for key in _adjustment_slot_keys(x)}
     once_adjustments = {(key, x.get('occurrence_date')): x
                         for x in adjustments
                         if x.get('kind') in ('cancel_once', 'move_once')
                         for key in _adjustment_slot_keys(x)}
-    try:
-        date_info = cached('eta_date_info', 300,
-                           lambda: _eta_data(ETA_DATE_INFO_URL), force=force)
-    except Exception:
-        date_info = {}
-    try:
-        term_raw = cached('eta_term_list', 3600, lambda: _eta_data(
-            ETA_TERM_LIST_URL + '?' + urllib.parse.urlencode({'xh': CURRENT_STUID})))
-        if isinstance(term_raw, dict):
-            term_raw = (term_raw.get('xnList') or term_raw.get('list') or
-                        term_raw.get('items') or [])
-        terms = _term_options(term_raw)
-    except Exception:
-        terms = []
+    date_info = bundle.get('date_info') or {}
+    terms = bundle.get('terms') or []
 
     days = []
     for offset in range(7):
@@ -3417,6 +3508,9 @@ def fetch_eta_timetable(start_date=None, term='', force=False):
         'week_start': monday.isoformat(),
         'week_end': (monday + datetime.timedelta(days=6)).isoformat(),
         'term': bundle['term'],
+        'stale': bundle.get('stale', False),
+        'sync_error': bundle.get('sync_error', ''),
+        'synced_at': datetime.datetime.fromtimestamp(bundle['synced_at']).astimezone().isoformat(timespec='seconds'),
         'current_term': bundle['current_term'],
         'terms': terms,
         'current': {
@@ -3428,7 +3522,7 @@ def fetch_eta_timetable(start_date=None, term='', force=False):
         'practice_courses': bundle['practice_courses'],
         'adjustments': adjustments,
         # 前端用它生成每一天顶部的“截止任务”清单；只返回当前登录用户的本地待办。
-        'manual_tasks': get_all_manual_tasks(),
+        'manual_tasks': context['manual_tasks'],
     }
 
 
@@ -3626,9 +3720,26 @@ def api_course_todos(course_id, course_name=''):
             'manual_tasks': get_manual_tasks(cid, name), 'warnings': warnings}
 
 
-def api_timetable(start_date='', term='', force=False):
+def api_timetable(start_date='', term='', force=False, weeks=1, cache_only=False):
+    owner = CURRENT_STUID
     try:
-        return {'ok': True, **fetch_eta_timetable(start_date or None, term, force)}
+        if not owner:
+            raise RuntimeError('课表需要学号，请退出后重新登录一次')
+        count = int(weeks)
+        if not 1 <= count <= 17:
+            return {'ok': False, 'error': '预加载周数应在 1 到 17 之间'}
+        chosen = datetime.date.fromisoformat(start_date) if start_date else datetime.date.today()
+        monday = chosen - datetime.timedelta(days=chosen.weekday())
+        context = _timetable_context(term, force, cache_only)
+        batch = [fetch_eta_timetable(
+            (monday + datetime.timedelta(weeks=i - count // 2)).isoformat(),
+            _context=context) for i in range(count)]
+        if CURRENT_STUID != owner:
+            raise RuntimeError('登录账号已变化，请重新加载课表')
+        result = {'ok': True, **batch[count // 2]}
+        if count > 1:
+            result['weeks'] = batch
+        return result
     except ValueError:
         return {'ok': False, 'error': '日期格式无效'}
     except Exception as e:
@@ -3662,6 +3773,9 @@ def api_logout():
 
 
 def api_status():
+    # 已恢复的本机账号可直接查看旧课表；联网校验失败不应挡住离线入口。
+    if CURRENT_STUID and _saved_timetable_bundle(CURRENT_STUID):
+        return {'ok': True, 'logged_in': True, 'has_cached_timetable': True}
     return {'ok': True, 'logged_in': is_logged_in()}
 
 

@@ -1129,7 +1129,11 @@ let GRADES = null;
 
 // ---- ETA 周课表 + 课程内聚合待办 ----
 let COURSE_VIEW = "list";
-let SCHEDULE = { weekStart: "", data: null, loading: false, request: 0 };
+function newScheduleState() {
+  return { weekStart: "", data: null, loading: false, request: 0,
+    weeks: new Map(), pending: new Map(), generation: 0, notice: "" };
+}
+let SCHEDULE = newScheduleState();
 let SCHEDULE_COURSES = {};
 let SCHEDULE_RESOURCES = {};
 let SCHEDULE_LOCAL_FILES = {};
@@ -1218,25 +1222,93 @@ function switchCourseView(view) {
   if (schedule && !SCHEDULE.data) loadSchedule(false);
 }
 
-async function loadSchedule(force = false) {
-  const request = ++SCHEDULE.request;
-  SCHEDULE.loading = true;
-  $("#weekGrid").innerHTML = skeletonHtml("course", 5);
+function invalidateScheduleWeeks() {
+  SCHEDULE.generation++;
+  SCHEDULE.weeks.clear();
+}
+
+async function loadSchedule(force = false, localOnly = false) {
+  const state = SCHEDULE;
+  const generation = state.generation;
+  const request = ++state.request;
+  const chosen = state.weekStart || currentMondayISO();
+  const target = addDaysISO(chosen, -((new Date(chosen + "T12:00:00").getDay() + 6) % 7));
+  state.weekStart = target;
   $("#scheduleTodoPanel").hidden = true;
-  const q = new URLSearchParams();
-  if (SCHEDULE.weekStart) q.set("start", SCHEDULE.weekStart);
-  if (force) q.set("force", "1");
-  const res = await api("/api/timetable?" + q.toString());
-  if (request !== SCHEDULE.request) return;
-  SCHEDULE.loading = false;
-  if (!res.ok) {
-    $("#weekGrid").innerHTML = emptyBox("⚠️", "课表加载失败：" + (res.error || "未知错误"));
-    $("#weekMeta").textContent = "请确认当前网络能访问 ETA，或退出后重新登录";
-    return;
+  const hit = state.weeks.get(target);
+  if (hit) {
+    state.data = hit;
+    state.notice = "";
+    renderWeekSchedule();
+    if (!force) return;
   }
-  SCHEDULE.data = res;
-  SCHEDULE.weekStart = res.week_start;
-  renderWeekSchedule();
+  state.loading = true;
+  state.notice = state.data ? "正在更新课表，继续显示已保存的数据" : "";
+  if (state.data) renderWeekSchedule();
+  else $("#weekGrid").innerHTML = skeletonHtml("course", 5);
+
+  const fetchBatch = async (cacheOnly) => {
+    const q = new URLSearchParams({start: target, weeks: "9"});
+    if (cacheOnly) q.set("cache_only", "1");
+    else if (force) q.set("force", "1");
+    const key = `${generation}:${q}`;
+    if (!state.pending.has(key)) {
+      state.pending.set(key, api("/api/timetable?" + q).finally(() => {
+        state.pending.delete(key);
+        state.loading = state.pending.size > 0;
+      }));
+    }
+    return state.pending.get(key);
+  };
+  const accept = (res) => {
+    if (state !== SCHEDULE || generation !== state.generation || !res.ok) return false;
+    // 新快照到来后，清掉仍属于旧快照的周，避免远处的已访问周一直过期。
+    if (!res.stale && res.synced_at) {
+      state.weeks.forEach((week, key) => {
+        if (week.term === res.term && week.synced_at && week.synced_at < res.synced_at) state.weeks.delete(key);
+      });
+    }
+    (res.weeks || [res]).forEach(week => {
+      const old = state.weeks.get(week.week_start);
+      if (!old || !old.synced_at || !week.synced_at || week.synced_at >= old.synced_at) {
+        state.weeks.set(week.week_start, week);
+      }
+    });
+    const current = state.weeks.get(state.weekStart);
+    if (current) {
+      state.data = current;
+      state.notice = "";
+      renderWeekSchedule();
+    }
+    return true;
+  };
+
+  // 首次进入或跨出预加载范围，先从本机快照生成九周；不等待 ETA。
+  if (!force) {
+    const saved = await fetchBatch(true);
+    if (state !== SCHEDULE || generation !== state.generation) return;
+    const accepted = accept(saved);
+    if (request !== state.request) return;
+    if (accepted && (!saved.stale || localOnly)) {
+      state.loading = false;
+      return;
+    }
+  }
+  const res = await fetchBatch(false);
+  if (state !== SCHEDULE || generation !== state.generation) return;
+  accept(res);
+  if (request !== state.request) return;
+  state.loading = false;
+  if (!res.ok) {
+    if (state.data) {
+      state.weekStart = state.data.week_start;
+      state.notice = `未能获取 ${fmtMD(target)} 当周的新数据，继续显示已保存课表：${res.error || "连接失败"}`;
+      renderWeekSchedule();
+    } else {
+      $("#weekGrid").innerHTML = emptyBox("⚠️", "课表加载失败：" + (res.error || "未知错误"));
+      $("#weekMeta").textContent = "本机尚无课表缓存，请联网同步一次";
+    }
+  }
 }
 
 function renderWeekSchedule() {
@@ -1246,10 +1318,13 @@ function renderWeekSchedule() {
   const cur = d.current || {};
   const parts = [cur.academic_year, cur.semester, cur.teaching_week ? `第 ${cur.teaching_week} 周` : ""].filter(Boolean);
   $("#weekMeta").textContent = parts.join(" · ") + (d.local_now ? ` · 本机时间 ${String(d.local_now).slice(0, 16).replace("T", " ")}` : "") + " · 右键课程可调整";
+  if (d.synced_at) $("#weekMeta").textContent += ` · 上次同步 ${String(d.synced_at).slice(0, 16).replace("T", " ")}`;
   const adjustmentCount = (d.adjustments || []).length;
   $("#scheduleAdjustments").textContent = adjustmentCount ? `本地调整 ${adjustmentCount}` : "本地调整";
 
   const notices = (d.days || []).filter(x => x.notice).map(x => `${fmtMD(x.date)}：${x.notice}`);
+  if (SCHEDULE.notice) notices.unshift(SCHEDULE.notice);
+  else if (d.stale) notices.unshift(d.sync_error ? "同步失败，继续使用本地课表" : "正在显示本地课表，等待联网更新");
   $("#scheduleNotice").hidden = !notices.length;
   $("#scheduleNotice").textContent = notices.join("　");
   SCHEDULE_COURSES = {};
@@ -1458,14 +1533,17 @@ async function reloadScheduleTodo() {
   const q = `course_id=${encodeURIComponent(TODO_CTX.course_id)}&course_name=${encodeURIComponent(TODO_CTX.name)}`;
   const data = await api("/api/course-todos?" + q);
   if (data.ok) {
-    const all = SCHEDULE.data?.manual_tasks || [];
+    SCHEDULE.generation++; // 不让待办编辑前发出的课表请求覆盖新任务。
     const cid = data.course_id;
     const name = String(data.course_name || "").replace(/\s+/g, "").toLowerCase();
-    SCHEDULE.data.manual_tasks = all.filter(t => {
-      const sameId = cid != null && t.course_id != null && String(t.course_id) === String(cid);
-      const sameName = name && String(t.course_name || "").replace(/\s+/g, "").toLowerCase() === name;
-      return !(sameId || sameName);
-    }).concat(data.manual_tasks || []);
+    const weeks = new Set([...SCHEDULE.weeks.values(), SCHEDULE.data].filter(Boolean));
+    weeks.forEach(week => {
+      week.manual_tasks = (week.manual_tasks || []).filter(t => {
+        const sameId = cid != null && t.course_id != null && String(t.course_id) === String(cid);
+        const sameName = name && String(t.course_name || "").replace(/\s+/g, "").toLowerCase() === name;
+        return !(sameId || sameName);
+      }).concat(data.manual_tasks || []);
+    });
     updateScheduleManualSummary(data.course_id, data.course_name, data.manual_tasks || []);
     renderWeekSchedule();
     renderScheduleTodo(data);
@@ -1475,7 +1553,8 @@ function updateScheduleManualSummary(courseId, courseName, tasks) {
   const all = tasks.length;
   const todo = tasks.filter(t => !t.done).length;
   const name = String(courseName || "").replace(/\s+/g, "").toLowerCase();
-  (SCHEDULE.data?.days || []).forEach(day => (day.blocks || []).forEach(block =>
+  const weeks = new Set([...SCHEDULE.weeks.values(), SCHEDULE.data].filter(Boolean));
+  weeks.forEach(week => (week.days || []).forEach(day => (day.blocks || []).forEach(block =>
     (block.courses || []).forEach(course => {
       const sameId = courseId != null && course.course_id != null && String(course.course_id) === String(courseId);
       const sameName = name && String(course.name || "").replace(/\s+/g, "").toLowerCase() === name;
@@ -1483,7 +1562,7 @@ function updateScheduleManualSummary(courseId, courseName, tasks) {
         course.manual_task_count = all;
         course.manual_task_todo = todo;
       }
-    })));
+    }))));
 }
 async function addManualTask() {
   if (!TODO_CTX) return;
@@ -1596,14 +1675,16 @@ async function saveScheduleAdjustment() {
   if (!r.ok) { btn.disabled = false; btn.textContent = "保存调整"; showToast(r.error || "保存失败", "err"); return; }
   closeScheduleEdit();
   if (kind === "move_once") SCHEDULE.weekStart = payload.new_date;
-  await loadSchedule(false);
+  invalidateScheduleWeeks();
+  await loadSchedule(false, true);
   showToast("课表调整已保存在本机", "ok");
 }
 async function deleteScheduleAdjustment(id) {
   const r = await api("/api/schedule-adjustment", {method:"POST", body:JSON.stringify({action:"delete", id})});
   if (!r.ok) { showToast(r.error || "恢复失败", "err"); return; }
   closeScheduleEdit();
-  await loadSchedule(false);
+  invalidateScheduleWeeks();
+  await loadSchedule(false, true);
   showToast("已恢复 ETA 官方安排", "ok");
 }
 function adjustmentDescription(a) {
@@ -3026,13 +3107,17 @@ $("#courseSearch").oninput = renderCourses;
 $("#logoutBtn").onclick = async () => {
   await api("/api/logout", { method: "POST" });
   DATA = { courses: [], homeworks: [], activeIds: new Set() };
-  SCHEDULE = { weekStart: "", data: null, loading: false, request: 0 };
+  SCHEDULE = newScheduleState();
   switchCourseView("list");
   $("#app").style.display = "none";
   $("#login").style.display = "flex";
 };
 // 每两分钟静默刷新一次（刷新会更新倒计时和提交状态）
 setInterval(() => { if ($("#app").style.display === "flex") loadData(); }, 120000);
+// 联网更新在后台完成，切周只读取已经预加载的课表。
+setInterval(() => {
+  if ($("#app").style.display === "flex" && COURSE_VIEW === "schedule" && !SCHEDULE.loading) loadSchedule(true);
+}, 300000);
 </script>
 
 </body>
