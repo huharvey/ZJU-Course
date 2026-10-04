@@ -39,11 +39,13 @@ import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from http.cookiejar import Cookie, CookieJar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -69,6 +71,10 @@ SESSION_FILE = os.path.join(DATA_DIR, 'session.dat')
 DL_DIR_FILE = os.path.join(DATA_DIR, 'download_dir.json')
 COURSE_FOLDERS_FILE = os.path.join(DATA_DIR, 'course_folders.json')
 _COURSE_FOLDERS_LOCK = threading.Lock()
+LIVE_EXPORTS_FILE = os.path.join(DATA_DIR, 'live_exports.json')
+_LIVE_EXPORTS_LOCK = threading.Lock()
+_LOCAL_DOWNLOAD_LOCK = threading.Lock()
+_LOCAL_DOWNLOADS = {}
 
 
 def _default_download_dir():
@@ -1402,47 +1408,166 @@ def stream_upload(upload_id):
     return _DATA_OPENER.open(req, timeout=120)
 
 
-def api_save_download(upload_id, name, course='', course_id=None):
-    """
-    把学在浙大文件**直接写到本地下载文件夹**（桌面版专用）。
+@contextmanager
+def _local_download_lock(key):
+    """同一目标的请求串行处理；最后一个请求结束后释放锁记录。"""
+    key = os.path.normcase(os.path.abspath(key))
+    with _LOCAL_DOWNLOAD_LOCK:
+        entry = _LOCAL_DOWNLOADS.setdefault(key, [threading.RLock(), 0])
+        entry[1] += 1
+    try:
+        with entry[0]:
+            yield
+    finally:
+        with _LOCAL_DOWNLOAD_LOCK:
+            entry[1] -= 1
+            if not entry[1]:
+                del _LOCAL_DOWNLOADS[key]
 
-    桌面外壳（pywebview/WebView2）不支持网页触发的「另存为」，所以由后端
-    一边流式拉取一边落盘。同名文件自动加 (1)、(2) 后缀，绝不覆盖。
-    course 非空时优先落到该课程绑定的本地资料文件夹。
-    """
+
+def _local_download_folder(course='', course_id=None):
     if str(course or '').strip():
-        folder, custom = get_course_folder(course_id, course, create=True)
+        folder, custom = get_course_folder(course_id, course, create=False)
     else:
         folder, custom = get_download_dir(), False
     if custom and not os.path.isdir(folder):
-        return {'ok': False, 'error': '该课程绑定的资料文件夹已不存在，请重新选择'}
-    try:
-        os.makedirs(folder, exist_ok=True)
-    except Exception as e:
-        return {'ok': False, 'error': '无法创建课程资料文件夹：' + str(e)}
+        raise FileNotFoundError('该课程绑定的资料文件夹已不存在，请重新选择')
+    return os.path.abspath(folder)
+
+
+def _upload_filename(upload_id, name):
     fname = os.path.basename(name or '').strip() or ('file_%s' % upload_id)
-    fname = re.sub(r'[\\/:*?"<>|]', '_', fname)   # Windows 非法字符
-    stem, ext = os.path.splitext(fname)
-    target = os.path.join(folder, fname)
-    n = 1
-    while os.path.exists(target):
-        target = os.path.join(folder, '%s(%d)%s' % (stem, n, ext))
-        n += 1
+    return re.sub(r'[\\/:*?"<>|]', '_', fname).rstrip('. ') or ('file_%s' % upload_id)
+
+
+def _subtitle_filename(sub_id, name):
+    base = str(name or '').strip() or ('智云课堂_%s' % sub_id)
+    base = re.sub(r'[\\/:*?"<>|]', '_', base).strip('. ')[:160]
+    return (base or ('智云课堂_%s' % sub_id)) + '_字幕.txt'
+
+
+def _reveal_local_file(target):
+    """Windows 打开资源管理器并选中文件；其它系统打开所在目录。"""
+    result = {'ok': True, 'path': target, 'existing': True, 'revealed': False}
     try:
-        resp = stream_upload(upload_id)
-        with open(target, 'wb') as f:
-            while True:
-                chunk = resp.read(65536)
-                if not chunk:
-                    break
-                f.write(chunk)
+        if os.name == 'nt':
+            # /select 的路径必须紧跟逗号；显式引用以支持空格和逗号。
+            subprocess.Popen('explorer.exe /select,"%s"' % os.path.abspath(target))
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', '-R', target])
+        else:
+            subprocess.Popen(['xdg-open', os.path.dirname(target)])
+        result['revealed'] = True
     except Exception as e:
+        result['reveal_error'] = '无法定位本地文件：' + str(e)
+    return result
+
+
+def _save_local_download(target, writer):
+    """先检查成品；临时文件写完后再发布，避免残片被当作已下载。"""
+    with _local_download_lock(target):
+        if os.path.isfile(target):
+            return _reveal_local_file(target)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        temp_path = None
         try:
-            os.remove(target)   # 写一半失败的残片清掉
-        except Exception:
-            pass
+            with tempfile.NamedTemporaryFile(dir=os.path.dirname(target),
+                                             prefix='.zjucourse-', suffix='.tmp',
+                                             delete=False) as f:
+                temp_path = f.name
+                writer(f)
+            try:
+                if os.name == 'nt':
+                    os.rename(temp_path, target)  # Windows 不覆盖已有目标。
+                else:
+                    os.link(temp_path, target)  # 原子发布，拒绝覆盖。
+            except FileExistsError:
+                if os.path.isfile(target):
+                    return _reveal_local_file(target)
+                raise
+            return {'ok': True, 'path': target, 'existing': False}
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
+
+
+def _live_export_key(folder, sub_id):
+    return json.dumps([CURRENT_STUID, os.path.normcase(os.path.realpath(folder)),
+                       str(sub_id)], ensure_ascii=False)
+
+
+def _load_live_exports():
+    try:
+        with open(LIVE_EXPORTS_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _known_live_ppt(folder, sub_id):
+    # 智云文件名由服务端生成；记录文件名以便下次点击在联网前定位。
+    with _LIVE_EXPORTS_LOCK:
+        name = _load_live_exports().get(_live_export_key(folder, sub_id))
+    if isinstance(name, str) and name and os.path.basename(name) == name:
+        target = os.path.join(folder, name)
+        if os.path.isfile(target):
+            return target
+    return None
+
+
+def _remember_live_ppt(folder, sub_id, target):
+    with _LIVE_EXPORTS_LOCK:
+        data = _load_live_exports()
+        data[_live_export_key(folder, sub_id)] = os.path.basename(target)
+        tmp = LIVE_EXPORTS_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, LIVE_EXPORTS_FILE)
+
+
+def api_local_download_status(payload):
+    """只检查当前保存目录的成品，供按钮显示状态，不打开文件夹。"""
+    files = payload.get('files')
+    if not isinstance(files, list) or len(files) > 1000:
+        return {'ok': False, 'error': '文件列表无效'}
+    states = []
+    for item in files:
+        try:
+            folder = _local_download_folder(item.get('course'), item.get('course_id'))
+            kind = item.get('kind')
+            if kind == 'upload':
+                target = os.path.join(folder, _upload_filename(item.get('id'), item.get('name')))
+            elif kind == 'subtitles':
+                target = os.path.join(folder, _subtitle_filename(item.get('id'), item.get('name')))
+            elif kind == 'ppt':
+                target = _known_live_ppt(folder, item.get('id'))
+            else:
+                target = None
+            exists = bool(target and os.path.isfile(target))
+            states.append({'exists': exists, 'path': target if exists else ''})
+        except (OSError, TypeError, AttributeError):
+            states.append({'exists': False, 'path': ''})
+    return {'ok': True, 'files': states}
+
+
+def api_save_download(upload_id, name, course='', course_id=None):
+    """文件已有则在本地定位，否则流式下载到课程资料目录。"""
+    try:
+        folder = _local_download_folder(course, course_id)
+        target = os.path.join(folder, _upload_filename(upload_id, name))
+
+        def write(f):
+            with stream_upload(upload_id) as resp:
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+
+        return _save_local_download(target, write)
+    except Exception as e:
         return {'ok': False, 'error': '下载失败：' + str(e)}
-    return {'ok': True, 'path': target}
 
 
 def api_course_folder(course_id=None, course_name=''):
@@ -1909,50 +2034,52 @@ def fetch_live_subtitles(sub_id, page_view_url, start_time=''):
 
 
 def export_live_subtitles(sub_id, page_view_url, course='', fallback_name='',
-                          start_time=''):
+                          start_time='', course_id=None):
     """取得智云自动字幕，仅保留中文原文并保存到课程资料文件夹。"""
-    result = fetch_live_subtitles(sub_id, page_view_url, start_time=start_time)
-    if not result.get('ok'):
+    try:
+        folder = _local_download_folder(course, course_id)
+        target = os.path.join(folder, _subtitle_filename(sub_id, fallback_name))
+        count = 0
+
+        def write(f):
+            nonlocal count
+            result = fetch_live_subtitles(sub_id, page_view_url, start_time=start_time)
+            if not result.get('ok'):
+                raise ValueError(result.get('error') or '字幕获取失败')
+            chinese_rows = [row for row in result['subtitles'] if row.get('text')]
+            if not chinese_rows:
+                raise ValueError('该节录播没有可导出的中文字幕')
+            count = len(chinese_rows)
+            # 带 BOM，Windows 记事本双击打开也能稳定识别中文。
+            f.write(_subtitle_txt(chinese_rows).encode('utf-8-sig'))
+
+        result = _save_local_download(target, write)
+        if not result.get('existing'):
+            result['count'] = count
         return result
-    chinese_rows = [row for row in result['subtitles'] if row.get('text')]
-    if not chinese_rows:
-        return {'ok': False, 'error': '该节录播没有可导出的中文字幕'}
-    if str(course or '').strip():
-        folder, custom = get_course_folder(None, course, create=True)
-        if custom and not os.path.isdir(folder):
-            return {'ok': False, 'error': '该课程绑定的资料文件夹已不存在，请重新选择'}
-    else:
-        folder = get_download_dir()
-    try:
-        os.makedirs(folder, exist_ok=True)
     except Exception as e:
-        return {'ok': False, 'error': '无法创建课程资料文件夹：' + str(e)}
+        return {'ok': False, 'error': '字幕导出失败：' + str(e)}
 
-    base = str(fallback_name or '').strip() or ('智云课堂_%s' % sub_id)
-    base = re.sub(r'[\\/:*?"<>|]', '_', base).strip('. ')[:160]
-    if not base:
-        base = '智云课堂_%s' % sub_id
-    fname = base + '_字幕.txt'
-    stem, ext = os.path.splitext(fname)
-    target = os.path.join(folder, fname)
-    n = 1
-    while os.path.exists(target):
-        target = os.path.join(folder, '%s(%d)%s' % (stem, n, ext))
-        n += 1
+
+def export_live_ppt(sub_id, page_view_url, course='', fallback_name='', course_id=None):
     try:
-        # utf-8-sig 带 BOM，Windows 记事本双击打开也能稳定识别中文。
-        with open(target, 'w', encoding='utf-8-sig', newline='\n') as f:
-            f.write(_subtitle_txt(chinese_rows))
+        folder = _local_download_folder(course, course_id)
+        with _local_download_lock(os.path.join(folder, '.live-ppt-' + str(sub_id))):
+            known = _known_live_ppt(folder, sub_id)
+            if known:
+                return _reveal_local_file(known)
+            result = _export_live_ppt(sub_id, page_view_url, folder, fallback_name)
+            if result.get('ok'):
+                try:
+                    _remember_live_ppt(folder, sub_id, result['path'])
+                except OSError:
+                    pass  # 记录失败不影响成品，下次仍按官方文件名查重。
+            return result
     except Exception as e:
-        try:
-            os.remove(target)
-        except Exception:
-            pass
-        return {'ok': False, 'error': '字幕保存失败：' + str(e)}
-    return {'ok': True, 'path': target, 'count': len(chinese_rows)}
+        return {'ok': False, 'error': '课件导出失败：' + str(e)}
 
 
-def export_live_ppt(sub_id, page_view_url, course='', fallback_name=''):
+def _export_live_ppt(sub_id, page_view_url, folder, fallback_name=''):
     """
     导出某节录播的课件（type=1 → PPT），保存到下载文件夹/课程名/ 下。
 
@@ -1981,39 +2108,25 @@ def export_live_ppt(sub_id, page_view_url, course='', fallback_name=''):
         path_name = (info.get('path_name') or '').strip()
         if not path_name:
             return {'ok': False, 'error': '智云课堂未返回下载地址'}
-        if str(course or '').strip():
-            folder, custom = get_course_folder(None, course, create=True)
-            if custom and not os.path.isdir(folder):
-                return {'ok': False, 'error': '该课程绑定的资料文件夹已不存在，请重新选择'}
-        else:
-            folder = get_download_dir()
-        os.makedirs(folder, exist_ok=True)
         fname = file_name or (fallback_name or ('智云课件_%s.pptx' % sub_id))
         fname = re.sub(r'[\\/:*?"<>|]', '_', os.path.basename(fname)).strip()
         if not fname:
             fname = '智云课件_%s.pptx' % sub_id
         if '.' not in fname:
             fname += '.pptx'
-        stem, ext = os.path.splitext(fname)
         target = os.path.join(folder, fname)
-        n = 1
-        while os.path.exists(target):
-            target = os.path.join(folder, '%s(%d)%s' % (stem, n, ext))
-            n += 1
         url = path_name if path_name.startswith('http') else CMC_BASE + path_name
-        try:
+
+        def write(f):
             resp = h.request('GET', url, headers=hdr)
             if resp.status != 200 or not resp.body:
-                return {'ok': False, 'error': '课件下载失败（HTTP %s）' % resp.status}
-            with open(target, 'wb') as f:
-                f.write(resp.body)
+                raise ValueError('课件下载失败（HTTP %s）' % resp.status)
+            f.write(resp.body)
+
+        try:
+            return _save_local_download(target, write)
         except Exception as e:
-            try:
-                os.remove(target)
-            except Exception:
-                pass
             return {'ok': False, 'error': '课件下载失败：' + str(e)}
-        return {'ok': True, 'path': target}
 
     # 1) 查一次状态；code=0 已生成可直接下
     d = query_status()
@@ -2607,6 +2720,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/course-folder':
             self._json(api_course_folder_action(payload))
             return
+        if path == '/api/local-download-status':
+            self._json(api_local_download_status(payload))
+            return
         if path == '/api/download_dir':
             ok = set_download_dir(payload.get('dir'))
             self._json({'ok': ok, 'dir': get_download_dir(),
@@ -2635,7 +2751,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(export_live_ppt(
                     sub_id, qs.get('url', [''])[0],
                     course=qs.get('course', [''])[0],
-                    fallback_name=qs.get('name', [''])[0]))
+                    fallback_name=qs.get('name', [''])[0],
+                    course_id=qs.get('course_id', [''])[0]))
             except Exception as e:
                 self._json({'ok': False, 'error': '导出失败：' + str(e)}, 200)
             return
@@ -2650,7 +2767,8 @@ class Handler(BaseHTTPRequestHandler):
                     sub_id, qs.get('url', [''])[0],
                     course=qs.get('course', [''])[0],
                     fallback_name=qs.get('name', [''])[0],
-                    start_time=qs.get('start_time', [''])[0]))
+                    start_time=qs.get('start_time', [''])[0],
+                    course_id=qs.get('course_id', [''])[0]))
             except Exception as e:
                 self._json({'ok': False, 'error': '字幕导出失败：' + str(e)}, 200)
             return

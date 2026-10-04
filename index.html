@@ -450,6 +450,13 @@
   .file .dl:active { transform:scale(.96); }
   .file .dl.pv { border-color:var(--green); color:var(--green); }
   .file .dl.pv:hover { background:var(--green); color:#fff; }
+  .file .dl.downloaded, .st-file-download.downloaded {
+    border-color:var(--line); color:var(--muted); background:var(--hover);
+  }
+  .file .dl.downloaded:hover, .st-file-download.downloaded:hover {
+    border-color:var(--blue); color:var(--blue); background:var(--hover);
+  }
+  .file .dl:disabled, .st-file-download:disabled { opacity:.6; cursor:wait; }
   .local-folder-bar { display:flex; align-items:center; gap:7px; flex-wrap:wrap;
                       border:1px solid var(--line); background:var(--soft); border-radius:10px;
                       padding:9px 10px; margin-bottom:10px; }
@@ -1477,7 +1484,7 @@ function renderScheduleTodo(data) {
     }
     const label = r.name || r.activity || "课件";
     const canDownload = r.id != null && fileExt(label) === "pdf";
-    return `<li class="st-file-row"><button class="st-link" onclick="previewScheduleResource('${key}',this)">📎 ${esc(label)}</button>${canDownload ? `<button class="st-file-download" onclick="downloadScheduleResource(event,'${key}')">下载</button>` : ""}</li>`;
+    return `<li class="st-file-row"><button class="st-link" onclick="previewScheduleResource('${key}',this)">📎 ${esc(label)}</button>${canDownload ? `<button class="st-file-download" ${localDownloadAttrs('upload',r.id,r.name,data.course_name,data.course_id)} onclick="downloadScheduleResource(event,'${key}')">下载</button>` : ""}</li>`;
   }).join("");
   const localResources = localFiles.map((r, i) => {
     const key = "sl" + i;
@@ -1504,6 +1511,7 @@ function renderScheduleTodo(data) {
         <div class="st-add"><input id="manualTaskInput" placeholder="添加任务…" maxlength="300" onkeydown="if(event.key==='Enter')addManualTask()" /><input id="manualTaskDeadline" type="date" title="截止日期" onkeydown="if(event.key==='Enter')addManualTask()" /><button class="btn" onclick="addManualTask()">添加</button></div>
       </section>
     </div>`;
+  refreshDownloadButtons();
 }
 
 function closeScheduleTodo() { $("#scheduleTodoPanel").hidden = true; TODO_CTX = null; }
@@ -1906,7 +1914,7 @@ function fileItemHtml(u) {
   const size = fmtSize(u.size) ? ` · ${fmtSize(u.size)}` : "";
   return `<div class="file"><span class="fname">${esc(u.name)}<span class="ftype">${fileType(u.name)}${size}</span></span>`
        + `<button class="dl pv" data-name="${esc(u.name)}" onclick="previewFile(${u.id}, this)" title="在线预览（图片/PDF/Word/PPT/Excel/TXT 等）">预览</button>`
-       + `<button class="dl" onclick="downloadUpload(${u.id})">下载</button></div>`;
+       + `<button class="dl" ${localDownloadAttrs('upload',u.id,u.name,DETAIL_COURSE_NAME,DETAIL_COURSE_ID)} onclick="downloadUpload(${u.id},this)">下载</button></div>`;
 }
 
 function localFileItemHtml(file, i) {
@@ -1933,6 +1941,12 @@ function renderLocalCourseFiles(data) {
   const files = data.files || [];
   box.innerHTML = (data.warning ? `<div class="hint" style="margin-bottom:8px;color:#b45309">${esc(data.warning)}</div>` : "") +
     (files.length ? files.map(localFileItemHtml).join("") : emptyBox("📂", "把 PDF 放入这个文件夹后，点击刷新即可显示"));
+  // 文件可能在应用外被删除或移动，也可能刚刚切换了保存目录。
+  for (const btn of document.querySelectorAll('#detail [data-local-kind]')) {
+    btn.dataset.localCourse = DETAIL_COURSE_NAME;
+    btn.dataset.localCourseId = String(DETAIL_COURSE_ID ?? '');
+  }
+  refreshDownloadButtons();
 }
 async function refreshLocalCourseFiles() {
   if (DETAIL_COURSE_ID == null) return;
@@ -2323,58 +2337,29 @@ function liveRowHtml(l) {
   return `<div class="file live">
     <span class="fname">${esc(when)}${place ? `<span class="ftype">${esc(place)}</span>` : ""}<span class="ftype">${esc(st)}${durTxt ? " · " + durTxt : ""}</span></span>
     <a class="dl pv" href="${esc(l.page_view_url)}" target="_blank" rel="noopener" title="在智云课堂网页打开回放">回放</a>
-    <button class="dl" onclick="exportLiveSubtitles('${esc(l.sub_id)}', this)" title="导出智云自动中文字幕 TXT 到课程资料文件夹">导出字幕</button>
-    <button class="dl" onclick="exportLivePpt('${esc(l.sub_id)}', this)" title="调智云课堂官方导出，原生 PPT 存到下载文件夹/课程名/">导出PPT</button>
+    <button class="dl" ${localDownloadAttrs('subtitles',l.sub_id,l.title,DETAIL_COURSE_NAME,DETAIL_COURSE_ID)} onclick="exportLiveSubtitles('${esc(l.sub_id)}', this)" title="导出智云自动中文字幕 TXT 到课程资料文件夹">导出字幕</button>
+    <button class="dl" ${localDownloadAttrs('ppt',l.sub_id,l.title,DETAIL_COURSE_NAME,DETAIL_COURSE_ID)} onclick="exportLivePpt('${esc(l.sub_id)}', this)" title="导出 PPT 到课程资料文件夹">导出PPT</button>
   </div>`;
 }
 
 async function exportLiveSubtitles(subId, btn) {
   const l = DETAIL_LIVES[subId];
   if (!l) return;
-  const old = btn.textContent;
-  btn.disabled = true; btn.textContent = "导出中…";
-  showToast("正在获取智云中文字幕…", "info", 3000);
-  try {
-    const q = "sub_id=" + encodeURIComponent(subId)
-      + "&url=" + encodeURIComponent(l.page_view_url || "")
-      + "&course=" + encodeURIComponent(DETAIL_COURSE_NAME || "")
-      + "&name=" + encodeURIComponent(l.title || "")
-      + "&start_time=" + encodeURIComponent(l.start_time || "");
-    const r = await fetch("/api/lives/export_subtitles?" + q, {
-      method: "POST",
-      headers: { "X-Zjucourse-Token": window.TOKEN }
-    });
-    const d = await r.json();
-    if (d.ok) showToast(`已导出 ${d.count || 0} 条字幕，保存到：${d.path}`, "ok", 9000);
-    else showToast(d.error || "字幕导出失败", "err", 8000);
-  } catch (e) {
-    showToast("字幕导出出错：" + e, "err", 6000);
-  }
-  btn.disabled = false; btn.textContent = old;
+  const file = localDownloadDescriptor(btn);
+  const q = new URLSearchParams({sub_id:subId, url:l.page_view_url || '',
+    course:file.course, course_id:file.course_id, name:file.name, start_time:l.start_time || ''});
+  return runLocalDownload(file, "/api/lives/export_subtitles?" + q,
+    d => `已导出 ${d.count || 0} 条字幕，保存到：${d.path}`);
 }
 
 async function exportLivePpt(subId, btn) {
   const l = DETAIL_LIVES[subId];
   if (!l) return;
-  const old = btn.textContent;
-  btn.disabled = true; btn.textContent = "生成中…";
-  showToast("已向智云课堂发起 PPT 导出，首次生成约需 1-3 分钟，请留意提示…", "info", 6000);
-  try {
-    const q = "sub_id=" + encodeURIComponent(subId)
-      + "&url=" + encodeURIComponent(l.page_view_url || "")
-      + "&course=" + encodeURIComponent(DETAIL_COURSE_NAME || "")
-      + "&name=" + encodeURIComponent(l.title || "");
-    const r = await fetch("/api/lives/export_ppt?" + q, {
-      method: "POST",
-      headers: { "X-Zjucourse-Token": window.TOKEN }
-    });
-    const d = await r.json();
-    if (d.ok) showToast("PPT 导出完成，已保存到：" + d.path, "ok", 9000);
-    else showToast(d.error || "导出失败", "err", 8000);
-  } catch (e) {
-    showToast("导出出错：" + e, "err", 6000);
-  }
-  btn.disabled = false; btn.textContent = old;
+  const file = localDownloadDescriptor(btn);
+  const q = new URLSearchParams({sub_id:subId, url:l.page_view_url || '',
+    course:file.course, course_id:file.course_id, name:file.name});
+  return runLocalDownload(file, "/api/lives/export_ppt?" + q,
+    d => "PPT 导出完成，已保存到：" + d.path);
 }
 
 // 详情页作业列表（当前课程）。已提交的高亮并展示提交详情。
@@ -2493,6 +2478,7 @@ function renderHomeworkBox() {
       ${arr.map(x => hwCard(x, Math.min(seq++ * 22, 264))).join("")}
     </div>`).join("");
   refreshCountdowns();
+  refreshDownloadButtons();
 }
 
 function toggleSubmittedOnly() {
@@ -2684,31 +2670,121 @@ function showToast(msg, type = "info", autoMs = 4000) {
   }, autoMs);
 }
 
-async function downloadUpload(uploadId) {
-  const name = DETAIL_FILES[uploadId] || "";
-  const label = name || ("file_" + uploadId);
-  const course = DETAIL_COURSE[uploadId] || "";
-  const courseId = DETAIL_COURSE_ID_BY_UPLOAD[uploadId] ?? "";
-  // 统一走「后端直接写盘」通道：本地服务与浏览器同机，这样
-  // 设置里的下载文件夹（含课程子文件夹）在浏览器模式下同样生效。
-  // （浏览器原生「另存为」只认浏览器自己的下载位置，无视我们的设置。）
-  showToast("开始下载：" + label);
-  try {
-    const r = await fetch("/api/save_download/" + uploadId + "?name=" + encodeURIComponent(name)
-                          + "&course=" + encodeURIComponent(course)
-                          + "&course_id=" + encodeURIComponent(courseId), {
-      method: "POST",
-      headers: { "X-Zjucourse-Token": window.TOKEN }
-    });
-    const d = await r.json();
-    if (d.ok) {
-      showToast("下载完成，已保存到：" + d.path, "ok", 7000);
-      if (fileExt(name) === "pdf" && String(DETAIL_COURSE_ID) === String(courseId) &&
-          $("#detail").style.display !== "none") refreshLocalCourseFiles();
+const LOCAL_DOWNLOAD_PENDING = new Map();
+let LOCAL_DOWNLOAD_STATUS_VERSION = 0;
+
+function localDownloadAttrs(kind, id, name, course, courseId) {
+  return `data-local-kind="${esc(kind)}" data-local-id="${esc(String(id))}"`
+    + ` data-local-name="${esc(name || '')}" data-local-course="${esc(course || '')}"`
+    + ` data-local-course-id="${esc(String(courseId ?? ''))}"`;
+}
+function localDownloadDescriptor(btn) {
+  const d = btn.dataset;
+  return {kind:d.localKind, id:d.localId, name:d.localName || '',
+    course:d.localCourse || '', course_id:d.localCourseId || ''};
+}
+function localDownloadKey(file) { return JSON.stringify(file); }
+function localDownloadLabel(kind, exists) {
+  if (exists) return kind === 'upload' ? '已下载 · 定位' : '已导出 · 定位';
+  return {upload:'下载', subtitles:'导出字幕', ppt:'导出PPT'}[kind];
+}
+function setLocalDownloadButton(btn, exists, path = '') {
+  btn.classList.toggle('downloaded', exists);
+  btn.textContent = localDownloadLabel(btn.dataset.localKind, exists);
+  btn.title = exists ? `在文件夹中定位：${path}` : '本地没有此文件，点击保存';
+}
+function matchingDownloadButtons(file) {
+  const key = localDownloadKey(file);
+  return [...document.querySelectorAll('[data-local-kind]')]
+    .filter(btn => localDownloadKey(localDownloadDescriptor(btn)) === key);
+}
+async function refreshDownloadButtons() {
+  const version = ++LOCAL_DOWNLOAD_STATUS_VERSION;
+  const buttons = [...document.querySelectorAll('[data-local-kind]')];
+  const files = buttons.map(localDownloadDescriptor);
+  if (!files.length) return;
+  buttons.forEach((btn, i) => {
+    if (LOCAL_DOWNLOAD_PENDING.has(localDownloadKey(files[i]))) {
+      btn.disabled = true; btn.textContent = '处理中…';
     }
-    else showToast(d.error || "下载失败", "err", 6000);
-  } catch (e) {
-    showToast("下载出错：" + e, "err", 6000);
+  });
+  try {
+    // 按批扫描，不为每个文件发起一个请求。
+    for (let offset = 0; offset < files.length; offset += 1000) {
+      const batch = files.slice(offset, offset + 1000);
+      const data = await api('/api/local-download-status', {
+        method:'POST', body:JSON.stringify({files:batch})
+      });
+      if (version !== LOCAL_DOWNLOAD_STATUS_VERSION) return;
+      if (!data.ok) continue;
+      (data.files || []).forEach((state, i) => {
+        const btn = buttons[offset + i], file = batch[i];
+        if (btn && btn.isConnected && !LOCAL_DOWNLOAD_PENDING.has(localDownloadKey(file)) &&
+            localDownloadKey(localDownloadDescriptor(btn)) === localDownloadKey(file)) {
+          setLocalDownloadButton(btn, state.exists, state.path);
+        }
+      });
+    }
+  } catch (_) { /* 状态检查失败时，点击仍由后端检查真实文件。 */ }
+}
+async function runLocalDownload(file, url, successMessage) {
+  const key = localDownloadKey(file);
+  if (LOCAL_DOWNLOAD_PENDING.has(key)) return LOCAL_DOWNLOAD_PENDING.get(key);
+  // 让已发出的旧状态检查失效，避免它把完成后的按钮改回“下载”。
+  LOCAL_DOWNLOAD_STATUS_VERSION++;
+  const request = (async () => {
+    await Promise.resolve(); // 先登记进行中的请求，再处理同步异常。
+    for (const btn of matchingDownloadButtons(file)) {
+      btn.disabled = true; btn.textContent = '处理中…';
+    }
+    showToast(file.kind === 'ppt'
+      ? '正在检查本地 PPT；首次生成可能需要 1–3 分钟…'
+      : '正在检查并保存：' + (file.name || file.id));
+    let result;
+    try {
+      const r = await fetch(url, {
+        method:'POST', headers:{'X-Zjucourse-Token':window.TOKEN}
+      });
+      result = await r.json();
+      if (result.ok) {
+        showToast(result.existing
+          ? (result.revealed ? '文件已存在，已在本地文件夹中定位：' : '文件已存在：') + result.path
+          : successMessage(result), 'ok', 7000);
+        if (result.reveal_error) showToast(result.reveal_error, 'err', 8000);
+      } else {
+        showToast(result.error || '保存失败', 'err', 6000);
+      }
+    } catch (e) {
+      showToast('保存出错：' + e, 'err', 6000);
+    } finally {
+      LOCAL_DOWNLOAD_STATUS_VERSION++;
+      for (const btn of matchingDownloadButtons(file)) {
+        btn.disabled = false;
+        if (result?.ok) setLocalDownloadButton(btn, true, result.path);
+        else btn.textContent = localDownloadLabel(file.kind, btn.classList.contains('downloaded'));
+      }
+      LOCAL_DOWNLOAD_PENDING.delete(key);
+      refreshDownloadButtons();
+    }
+    return result;
+  })();
+  LOCAL_DOWNLOAD_PENDING.set(key, request);
+  return request;
+}
+
+window.addEventListener('focus', () => refreshDownloadButtons());
+
+async function downloadUpload(uploadId, btn) {
+  const file = btn?.dataset?.localKind ? localDownloadDescriptor(btn) : {
+    kind:'upload', id:String(uploadId), name:DETAIL_FILES[uploadId] || '',
+    course:DETAIL_COURSE[uploadId] || '', course_id:String(DETAIL_COURSE_ID_BY_UPLOAD[uploadId] ?? '')
+  };
+  const q = new URLSearchParams({name:file.name, course:file.course, course_id:file.course_id});
+  const d = await runLocalDownload(file, '/api/save_download/' + uploadId + '?' + q,
+    data => '下载完成，已保存到：' + data.path);
+  if (d?.ok && fileExt(file.name) === 'pdf' &&
+      String(DETAIL_COURSE_ID) === String(file.course_id) && $('#detail').style.display !== 'none') {
+    refreshLocalCourseFiles();
   }
 }
 
@@ -3047,6 +3123,10 @@ $("#dlDirBtn").onclick = async () => {
     const d = await r.json();
     if (!d.ok) alert(d.error || "设置失败");
     $("#dlDirText").textContent = d.dir || "";
+    if (d.ok) {
+      refreshDownloadButtons();
+      if ($('#detail').style.display !== 'none') refreshLocalCourseFiles();
+    }
   } catch (e) {
     alert("设置出错：" + e);
   }

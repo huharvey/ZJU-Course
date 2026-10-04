@@ -5,6 +5,7 @@ schedule_adjustments.json
 course_folders.json
 timetable_cache.json
 download_dir.json
+live_exports.json
 *.tmp
 
 # Python 运行缓存
